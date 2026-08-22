@@ -10,6 +10,10 @@ from routers import drawings, players, auth, sessions
 
 app = FastAPI(title="VR Drawing 3D REST API (Hybrid Mongo/SQLite)")
 
+@app.get("/", summary="Health check endpoint")
+def health_check():
+    """Basic root endpoint to verify the server is online."""
+    return {"status": "online", "message": "VR Drawing Database Server is running"}
 
 # --- Add CORS Middleware ---
 app.add_middleware(
