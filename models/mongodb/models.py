@@ -107,6 +107,8 @@ class Line(BaseModel):
     points: List[Point]
     startWidth: float
     endWidth: float
+    startColor: LineColor
+    endColor: LineColor
     hand: Hand
     userID: str
     history: List[LineEvent]

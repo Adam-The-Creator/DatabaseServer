@@ -105,9 +105,9 @@ def get_session_info(session_id: str) -> Session:
             description=row[2],
             startDate=row[3],
             endDate=row[4],
-            showBoy=row[5],
-            showGirl=row[6],
-            multiplayer=row[7]
+            showBoy=row[5] if row[5] is not None else 1,  # Fallback, if NULL
+            showGirl=row[6] if row[6] is not None else 1,  # Fallback, if NULL
+            multiplayer=row[7] if row[7] is not None else 0
         )
     raise HTTPException(status_code=404, detail="Session not found")
 
