@@ -84,6 +84,24 @@ def initialize_sqlite_tables():
         """
     )
 
+    # 6. ActiveRooms Table
+    sqlite_cursor.execute(
+        """
+            CREATE TABLE IF NOT EXISTS ActiveRooms (
+                ID TEXT PRIMARY KEY,
+                RoomCode TEXT UNIQUE,
+                Name TEXT,
+                RoomAddress TEXT,
+                SessionID TEXT,
+                DrawingID TEXT,
+                HostID TEXT,
+                FOREIGN KEY (SessionID) REFERENCES Sessions(ID),
+                FOREIGN KEY (DrawingID) REFERENCES DrawingMeta(ID),
+                FOREIGN KEY (HostID) REFERENCES Players(ID)
+            )
+        """
+    )
+
 
 # --- Initialize MongoDB connection ---
 try:

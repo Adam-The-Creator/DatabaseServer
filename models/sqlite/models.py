@@ -39,6 +39,15 @@ class Session(BaseModel):
     showGirl: int
     multiplayer: int
 
+class ActiveRoom(BaseModel):
+    id: str
+    name: str
+    roomCode: str
+    roomAddress: str
+    sessionID: str
+    drawingID: str
+    hostID: str
+
 class DrawingMeta(BaseModel):
     id: str
     playerID: str
