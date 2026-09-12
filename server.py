@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import config
 import database  # Import the database module to trigger the initialization prints and schemas
-from routers import drawings, players, auth, sessions
+from routers import drawings, players, auth, sessions, rooms
 
 app = FastAPI(title="VR Drawing 3D REST API (Hybrid Mongo/SQLite)")
 
@@ -29,6 +29,7 @@ app.include_router(auth.router)
 app.include_router(players.router)
 app.include_router(drawings.router)
 app.include_router(sessions.router)
+app.include_router(rooms.router)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start VR Drawing 3D Database server")
