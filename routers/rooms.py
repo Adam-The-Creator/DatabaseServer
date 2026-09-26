@@ -4,7 +4,7 @@ import random
 import string
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from database import get_db
+from database import get_db, execute_with_retry
 from models.sqlite.models import ActiveRoom
 
 
@@ -45,7 +45,8 @@ def create_room(req: RoomCreateRequest, db: sqlite3.Connection = Depends(get_db)
 
     try:
         cursor = db.cursor()
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             "INSERT INTO ActiveRooms (ID, RoomCode, Name, RoomAddress, SessionID, DrawingID, HostID) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (room_id, room_code, req.name, req.roomAddress, req.sessionID, req.drawingID, req.hostID)
         )
@@ -88,8 +89,9 @@ def join_room(room_code: str, db: sqlite3.Connection = Depends(get_db)) -> RoomJ
 def delete_room(room_code: str, db: sqlite3.Connection = Depends(get_db)):
     """Delete room (in SQLite DB)"""
     cursor = db.cursor()
-    cursor.execute("DELETE FROM ActiveRooms WHERE RoomCode = ?", (room_code.upper(),))
+    execute_with_retry(cursor, "DELETE FROM ActiveRooms WHERE RoomCode = ?", (room_code.upper(),))
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Room not found")
 
     db.commit()

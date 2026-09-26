@@ -5,7 +5,8 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from database import mongo_collection, get_db
+import database
+from database import get_db, execute_with_retry
 from models.mongodb.models import Drawing, GameType, Line, TrackedBehavior, Collaborator, PlacedModel, Metadata
 from models.sqlite.models import DrawingMeta
 from utils import get_date
@@ -93,13 +94,16 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
         placedModels=message.placedModels or []
     )
 
-    # 5. Save complex data to MongoDB
-    mongo_collection.insert_one(drawing.model_dump())
-
-    # 6. Save linking metadata to SQLite
+    # 5. Write the SQLite linking row FIRST, but do not commit yet - it stays
+    #    inside an open transaction. If anything below fails, including the
+    #    process crashing before reaching db.commit(), SQLite discards this row
+    #    automatically (on rollback, or implicitly when the connection closes
+    #    without a commit). That guarantees it never ends up with metadata
+    #    pointing at a drawing that was never actually saved to MongoDB.
     try:
         virtual_path = f"VRDrawing3D/Drawings/{metadata.owner}/{drawing_name}/{drawing_name}.json"
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             """
             INSERT INTO DrawingMeta (ID, PlayerID, Name, Path, GameType, SessionID)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -111,15 +115,23 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
                 int(metadata.gameType),
                 metadata.sessionID
             ))
-        db.commit()
     except sqlite3.IntegrityError as e:
-        # Rollback Mongo insertion if SQLite fails
-        mongo_collection.delete_one({"metadata.id": metadata.id})
+        db.rollback()
         raise HTTPException(status_code=400, detail=f"SQLite Integrity Error: {str(e)}")
     except Exception as e:
-        mongo_collection.delete_one({"metadata.id": metadata.id})
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save to SQLite: {str(e)}")
 
+    # 6. Only now write the full drawing document to MongoDB, and only commit the
+    #    pending SQLite row once this has actually succeeded - that way the two
+    #    stores can never end up disagreeing about whether the drawing exists.
+    try:
+        database.mongo_collection.insert_one(drawing.model_dump())
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save drawing to MongoDB: {str(e)}")
+
+    db.commit()
     return drawing
 
 
@@ -127,7 +139,7 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
 def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite3.Connection = Depends(get_db)):
     """Updates specific properties of an existing drawing in MongoDB"""
 
-    existing = mongo_collection.find_one({"metadata.id": drawing_id})
+    existing = database.mongo_collection.find_one({"metadata.id": drawing_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Drawing not found")
 
@@ -144,18 +156,26 @@ def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite
         updates["metadata.collaborators"] = [c.model_dump() for c in update_msg.collaborators]
 
     if updates:
-        mongo_collection.update_one({"metadata.id": drawing_id}, {"$set": updates})
+        database.mongo_collection.update_one({"metadata.id": drawing_id}, {"$set": updates})
 
-    # Process SQLite Diffs
+    # Process SQLite Diffs. Note: MongoDB has already been updated above by this
+    # point (its document has no separate "name" field to keep in sync, so there's
+    # no cross-store field to roll back here) - if this SQLite write fails, the
+    # content update in Mongo still stands; we report the rename failure
+    # explicitly rather than silently leaving the caller unsure what succeeded.
     if update_msg.name is not None:
         try:
             cursor = db.cursor()
-            cursor.execute("UPDATE DrawingMeta SET Name = ? WHERE ID = ?", (update_msg.name, drawing_id))
+            execute_with_retry(cursor, "UPDATE DrawingMeta SET Name = ? WHERE ID = ?", (update_msg.name, drawing_id))
             db.commit()
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update SQLite name: {str(e)}")
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Drawing content was updated, but renaming failed in SQLite: {str(e)}"
+            )
 
-    updated_data = mongo_collection.find_one({"metadata.id": drawing_id})
+    updated_data = database.mongo_collection.find_one({"metadata.id": drawing_id})
     updated_data.pop("_id", None)
     return updated_data
 
@@ -164,19 +184,16 @@ def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite
 def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db)) -> Drawing:
     """Import an already established drawing (JSON format) directly into the databases"""
 
-    drawing_dict = drawing.model_dump()
-    mongo_collection.update_one(
-        {"metadata.id": drawing.metadata.id},
-        {"$set": drawing_dict},
-        upsert=True
-    )
+    cursor = db.cursor()
+    drawing_name = f"Drawing_{drawing.metadata.id}"  # TODO: Templates should be defined in the config
+    virtual_path = f"VRDrawing3D/Drawings/{drawing.metadata.owner}/{drawing_name}/{drawing_name}.json"
 
+    # Same ordering as save_drawing: write SQLite first (uncommitted), then Mongo,
+    # then commit - so a failure at either step can't leave the two stores
+    # disagreeing about whether the drawing exists.
     try:
-        drawing_name = f"Drawing_{drawing.metadata.id}"  # TODO: Templates should be defined in the config
-        virtual_path = f"VRDrawing3D/Drawings/{drawing.metadata.owner}/{drawing_name}/{drawing_name}.json"
-
-        cursor = db.cursor()
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             """
             REPLACE INTO DrawingMeta (ID, PlayerID, Name, Path, GameType, SessionID)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -188,10 +205,22 @@ def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db)) -
                 int(drawing.metadata.gameType),
                 drawing.metadata.sessionID
             ))
-        db.commit()
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to import drawing to SQLite: {str(e)}")
 
+    try:
+        drawing_dict = drawing.model_dump()
+        database.mongo_collection.update_one(
+            {"metadata.id": drawing.metadata.id},
+            {"$set": drawing_dict},
+            upsert=True
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to import drawing to MongoDB: {str(e)}")
+
+    db.commit()
     return drawing
 
 
@@ -211,7 +240,7 @@ def get_drawing_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
 def get_drawing(drawing_id: str):
     """Return a 3D drawing by ID directly from MongoDB."""
 
-    drawing_data = mongo_collection.find_one({"metadata.id": drawing_id})
+    drawing_data = database.mongo_collection.find_one({"metadata.id": drawing_id})
     if drawing_data is not None:
         drawing_data.pop("_id", None)
         return drawing_data
@@ -253,13 +282,13 @@ def delete_drawing(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) ->
     """Delete drawing"""
 
     # Delete from MongoDB
-    mongo_result = mongo_collection.delete_one({"metadata.id": drawing_id})
+    mongo_result = database.mongo_collection.delete_one({"metadata.id": drawing_id})
     mongo_success = mongo_result.deleted_count > 0
 
     # Delete from SQLite
     try:
         cursor = db.cursor()
-        cursor.execute("DELETE FROM DrawingMeta WHERE ID = ?", (drawing_id,))
+        execute_with_retry(cursor, "DELETE FROM DrawingMeta WHERE ID = ?", (drawing_id,))
         sqlite_rows_affected = cursor.rowcount
         db.commit()
         sqlite_success = sqlite_rows_affected > 0

@@ -1,14 +1,46 @@
 import argparse
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pymongo.errors import ServerSelectionTimeoutError
 
 import config
-import database  # Import the database module to trigger the initialization prints and schemas
+import database
 from routers import drawings, players, auth, sessions, rooms
 
-app = FastAPI(title="VR Drawing 3D REST API (Hybrid Mongo/SQLite)")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup ---
+    # Connections are established here (ASGI startup) and so the connections can be closed gracefully on shutdown.
+    try:
+        database.connect_mongo()
+        print("✅ Successfully connected to MongoDB!")
+    except ServerSelectionTimeoutError:
+        print("❌ ERROR: Connection to MongoDB timed out!")
+        print(f"Make sure that MongoDB runs on {config.MONGO_URI} address!")
+        raise
+    except Exception as e:
+        print(f"❌ ERROR: Failed to connect to MongoDB: {e}")
+        raise
+
+    try:
+        database.verify_sqlite_schema()
+        print("✅ Successfully connected to SQLite and verified relational schemas!")
+    except Exception as e:
+        print(f"❌ ERROR: Failed to setup SQLite: {e}")
+        raise
+
+    yield  # <-- the app serves requests while suspended here
+
+    # --- Shutdown ---
+    database.close_mongo()
+    print("🛑 MongoDB connection closed. Server shutting down.")
+
+
+app = FastAPI(title="VR Drawing 3D REST API (Hybrid Mongo/SQLite)", lifespan=lifespan)
 
 @app.get("/", summary="Health check endpoint")
 def health_check():

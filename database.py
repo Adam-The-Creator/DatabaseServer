@@ -1,9 +1,38 @@
 import sqlite3
+import time
 
+from typing import Union, Any, Mapping
 from pymongo import MongoClient
-from pymongo.errors import ServerSelectionTimeoutError
+from pymongo.synchronous.database import Database
 
 import config
+
+
+mongo_client: Union[MongoClient, None] = None
+mongo_collection: Union[Database[Mapping[str, Any] | Any], None] = None
+
+
+def connect_mongo() -> None:
+    """
+    Establishes the MongoDB connection and populates the module-level
+    `mongo_client` / `mongo_collection` globals.
+    """
+    global mongo_client, mongo_collection
+
+    mongo_client = MongoClient(config.MONGO_URI, serverSelectionTimeoutMS=3000)
+    mongo_client.admin.command('ping')
+    mongo_db = mongo_client[config.MONGO_DB_NAME]
+    mongo_collection = mongo_db[config.COLLECTION_NAME]
+
+
+def close_mongo() -> None:
+    """Cleanly closes the MongoDB connection pool. Called on app shutdown."""
+    global mongo_client, mongo_collection
+
+    if mongo_client is not None:
+        mongo_client.close()
+    mongo_client = None
+    mongo_collection = None
 
 
 def get_sqlite_connection() -> sqlite3.Connection:
@@ -34,6 +63,7 @@ def get_sqlite_connection() -> sqlite3.Connection:
     # burst of simultaneous game requests degrades to "slightly slower" instead of
     # "random 500s".
     conn.execute("PRAGMA busy_timeout = 5000;")
+
     return conn
 
 
@@ -54,6 +84,37 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+
+def execute_with_retry(cursor: sqlite3.Cursor, query: str, params: tuple = (),
+                        *, max_attempts: int = 3, base_delay: float = 0.1) -> sqlite3.Cursor:
+    """
+    Runs a single write statement (INSERT/UPDATE/DELETE/REPLACE) and retries it if
+    SQLite reports the database as locked or busy.
+
+    `busy_timeout` (set on every connection in get_sqlite_connection) already makes
+    SQLite wait internally before raising this error, so this is a second line of
+    defense for the rarer case where that internal wait is still exceeded (e.g. a
+    long-running WAL checkpoint holding the writer lock). Retries with a short
+    exponential backoff instead of failing the request outright.
+
+    Returns the same cursor, so callers can keep using .rowcount / .lastrowid as
+    before - only the `cursor.execute(...)` call itself needs to be replaced with
+    `execute_with_retry(cursor, ...)` at write call sites.
+    """
+    attempt = 0
+    while True:
+        try:
+            cursor.execute(query, params)
+            return cursor
+        except sqlite3.OperationalError as e:
+            attempt += 1
+            message = str(e).lower()
+            if "locked" not in message and "busy" not in message:
+                raise
+            if attempt >= max_attempts:
+                raise
+            time.sleep(base_delay * (2 ** (attempt - 1)))
 
 
 def initialize_sqlite_tables(cursor: sqlite3.Cursor) -> None:
@@ -152,26 +213,24 @@ def initialize_sqlite_tables(cursor: sqlite3.Cursor) -> None:
         """
     )
 
+    # 7. Indexes on foreign-key / frequently-filtered columns.
+    # UNIQUE columns (Players.Username, ActiveRooms.RoomCode, ...) already get an
+    # implicit index from their UNIQUE constraint, so those aren't repeated here.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_drawingmeta_sessionid ON DrawingMeta(SessionID);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_drawingmeta_playerid ON DrawingMeta(PlayerID);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_activerooms_sessionid ON ActiveRooms(SessionID);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_activerooms_drawingid ON ActiveRooms(DrawingID);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_activerooms_hostid ON ActiveRooms(HostID);")
 
-# --- Initialize MongoDB connection ---
-try:
-    mongo_client = MongoClient(config.MONGO_URI, serverSelectionTimeoutMS=3000)
-    mongo_client.admin.command('ping')
-    mongo_db = mongo_client[config.MONGO_DB_NAME]
-    mongo_collection = mongo_db[config.COLLECTION_NAME]
-    print("✅ Successfully connected to MongoDB!")
-except ServerSelectionTimeoutError:
-    print("❌ ERROR: Connection to MongoDB timed out!")
-    print(f"Make sure that MongoDB runs on {config.MONGO_URI} address!")
-    exit(1)
 
-# --- Initialize SQLite schema (one-off connection, used only at startup) ---
-try:
-    _startup_conn = get_sqlite_connection()
-    initialize_sqlite_tables(_startup_conn.cursor())
-    _startup_conn.commit()
-    _startup_conn.close()
-    print("✅ Successfully connected to SQLite and verified relational schemas!")
-except Exception as e:
-    print(f"❌ ERROR: Failed to setup SQLite: {e}")
-    exit(1)
+def verify_sqlite_schema() -> None:
+    """
+    Opens a one-off connection, ensures all tables/indexes exist, then closes it.
+    Called once from the FastAPI lifespan handler at startup.
+    """
+    conn = get_sqlite_connection()
+    try:
+        initialize_sqlite_tables(conn.cursor())
+        conn.commit()
+    finally:
+        conn.close()

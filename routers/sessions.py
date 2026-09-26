@@ -5,7 +5,8 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from database import get_db, mongo_collection
+import database
+from database import get_db, execute_with_retry
 from models.mongodb.models import Drawing
 from models.sqlite.models import DrawingMeta, Session
 from utils import get_date
@@ -81,7 +82,7 @@ def get_drawings(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> L
 def get_drawing_data(session_id: str, drawing_id: str):
     """Get drawing data (JSON format) by drawing ID (Drawing from Mongo DB)"""
 
-    drawing_data = mongo_collection.find_one({"metadata.id": drawing_id, "metadata.sessionID": session_id})
+    drawing_data = database.mongo_collection.find_one({"metadata.id": drawing_id, "metadata.sessionID": session_id})
 
     if drawing_data is not None:
         drawing_data.pop("_id", None)
@@ -169,7 +170,8 @@ def create_session(session_data: SessionCreateMessage, db: sqlite3.Connection = 
 
     try:
         cursor = db.cursor()
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             """
             INSERT INTO Sessions (ID, Name, Description, StartDate, EndDate, ShowBoy, ShowGirl, Multiplayer) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -236,7 +238,7 @@ def update_session(session_id: str, update_data: SessionUpdateMessage, db: sqlit
 
     # 3. Apply updates
     try:
-        cursor.execute(query, tuple(params))
+        execute_with_retry(cursor, query, tuple(params))
         db.commit()
 
         # Return the modified object
@@ -262,12 +264,14 @@ def close_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> 
     cursor = db.cursor()
 
     # Only update if it exists and hasn't been closed already
-    cursor.execute(
+    execute_with_retry(
+        cursor,
         "UPDATE Sessions SET EndDate = ? WHERE ID = ? AND EndDate IS NULL",
         (end_date, session_id)
     )
 
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=400, detail="Session not found or already closed")
 
     db.commit()
@@ -280,7 +284,7 @@ def delete_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) ->
 
     try:
         cursor = db.cursor()
-        cursor.execute("DELETE FROM Sessions WHERE ID = ?", (session_id,))
+        execute_with_retry(cursor, "DELETE FROM Sessions WHERE ID = ?", (session_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Session not found")
 

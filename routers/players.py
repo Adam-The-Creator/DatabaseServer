@@ -4,7 +4,8 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Body, Depends
 from pydantic import BaseModel
 
-from database import get_db, mongo_collection
+import database
+from database import get_db, execute_with_retry
 from models.mongodb.models import Drawing
 from models.sqlite.models import DrawingMeta
 from models.sqlite.models import PlayerInfo
@@ -76,7 +77,7 @@ def get_drawing_data(user_id: str, drawing_id: str):
     """Get drawing data (JSON format) by drawing ID (Drawing from Mongo DB)"""
 
     # Ensuring we query the drawing that specifically belongs to the user
-    drawing_data = mongo_collection.find_one({"metadata.id": drawing_id, "metadata.owner": user_id})
+    drawing_data = database.mongo_collection.find_one({"metadata.id": drawing_id, "metadata.owner": user_id})
 
     if drawing_data is not None:
         drawing_data.pop("_id", None)
@@ -220,11 +221,13 @@ def update_player_name(user_id: str, name: str = Body(..., embed=True), db: sqli
     """Update name of player (in SQLite)"""
 
     cursor = db.cursor()
-    cursor.execute(
+    execute_with_retry(
+        cursor,
         "UPDATE PlayerInfo SET Name = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
         (name, user_id)
     )
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Player not found")
     db.commit()
     return {"message": "Player name updated successfully."}
@@ -235,11 +238,13 @@ def update_player_gender(user_id: str, gender: str = Body(..., embed=True), db: 
     """Update gender of player (in SQLite)"""
 
     cursor = db.cursor()
-    cursor.execute(
+    execute_with_retry(
+        cursor,
         "UPDATE PlayerInfo SET Gender = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
         (gender, user_id)
     )
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Player not found")
     db.commit()
     return {"message": "Player gender updated successfully."}
@@ -250,11 +255,13 @@ def update_player_age(user_id: str, age: int = Body(..., embed=True), db: sqlite
     """Update age of player (in SQLite)"""
 
     cursor = db.cursor()
-    cursor.execute(
+    execute_with_retry(
+        cursor,
         "UPDATE PlayerInfo SET Age = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
         (age, user_id)
     )
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Player not found")
     db.commit()
     return {"message": "Player age updated successfully."}
@@ -265,11 +272,13 @@ def update_player_dominant_hand(user_id: str, dominant_hand: str = Body(..., emb
     """Update dominant hand of player (in SQLite)"""
 
     cursor = db.cursor()
-    cursor.execute(
+    execute_with_retry(
+        cursor,
         "UPDATE PlayerInfo SET DominantHand = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
         (dominant_hand, user_id)
     )
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Player not found")
     db.commit()
     return {"message": "Player dominant hand updated successfully."}
@@ -280,7 +289,8 @@ def update_player_info(user_id: str, info: PlayerInfoUpdateMessage, db: sqlite3.
     """Update player info of player (PlayerInfo in SQLite)"""
 
     cursor = db.cursor()
-    cursor.execute(
+    execute_with_retry(
+        cursor,
         """
         UPDATE PlayerInfo 
         SET Name = ?, Gender = ?, Age = ?, DominantHand = ? 
@@ -289,6 +299,7 @@ def update_player_info(user_id: str, info: PlayerInfoUpdateMessage, db: sqlite3.
         (info.name, info.gender, info.age, info.dominantHand, user_id)
     )
     if cursor.rowcount == 0:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Player not found")
     db.commit()
     return {"message": "Player info updated successfully."}

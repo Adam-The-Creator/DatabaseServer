@@ -2,7 +2,7 @@ import sqlite3
 import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from database import get_db
+from database import get_db, execute_with_retry
 from utils import get_date, encrypt, generate_salt
 
 # Create the router instance
@@ -56,19 +56,22 @@ def sign_up(sign_up_data: SignUpMessage, db: sqlite3.Connection = Depends(get_db
 
     try:
         # 3. Insert into Passwords table
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             "INSERT INTO Passwords (ID, Salt, Password) VALUES (?, ?, ?)",
             (password_id, salt, password_hash)
         )
 
         # 4. Insert into PlayerInfo table (with default empty values as in C#)
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             "INSERT INTO PlayerInfo (ID, Name, Gender, Age, DominantHand) VALUES (?, ?, ?, ?, ?)",
             (player_info_id, None, None, 0, None)
         )
 
         # 5. Insert into Players table
-        cursor.execute(
+        execute_with_retry(
+            cursor,
             "INSERT INTO Players (ID, Username, PasswordId, PlayerInfoID, SignedIn, Created, Role) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (player_id, sign_up_data.username, password_id, player_info_id, None, created_date, sign_up_data.role)
         )
@@ -113,12 +116,14 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
         # 4. Success! Update the SignedIn timestamp
         current_time = get_date()
         try:
-            cursor.execute(
+            execute_with_retry(
+                cursor,
                 "UPDATE Players SET SignedIn = ? WHERE ID = ?",
                 (current_time, player_id)
             )
             db.commit()
         except Exception as e:
+            db.rollback()
             raise HTTPException(status_code=500, detail=f"Failed to update login time: {str(e)}")
 
         return {"message": "Login successful.", "playerId": player_id}
