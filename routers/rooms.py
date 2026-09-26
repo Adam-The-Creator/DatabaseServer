@@ -1,9 +1,10 @@
+import sqlite3
 import uuid
 import random
 import string
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from database import sqlite_conn, sqlite_cursor
+from database import get_db
 from models.sqlite.models import ActiveRoom
 
 
@@ -37,17 +38,18 @@ class RoomJoinResponse(BaseModel):
 
 
 @router.post("/", response_model=ActiveRoom, summary="Create new room")
-def create_room(req: RoomCreateRequest) -> ActiveRoom:
+def create_room(req: RoomCreateRequest, db: sqlite3.Connection = Depends(get_db)) -> ActiveRoom:
     """Create new room (in SQLite DB) generating a UUID and 6-char shortcode."""
     room_id = str(uuid.uuid4())
     room_code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
     try:
-        sqlite_cursor.execute(
+        cursor = db.cursor()
+        cursor.execute(
             "INSERT INTO ActiveRooms (ID, RoomCode, Name, RoomAddress, SessionID, DrawingID, HostID) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (room_id, room_code, req.name, req.roomAddress, req.sessionID, req.drawingID, req.hostID)
         )
-        sqlite_conn.commit()
+        db.commit()
         return ActiveRoom(
             id=room_id,
             name=req.name,
@@ -58,14 +60,15 @@ def create_room(req: RoomCreateRequest) -> ActiveRoom:
             hostID=req.hostID
         )
     except Exception as e:
-        sqlite_conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create room: {str(e)}")
 
 
 @router.get("/{room_code}", response_model=RoomJoinResponse, summary="Validate room code")
-def join_room(room_code: str) -> RoomJoinResponse:
+def join_room(room_code: str, db: sqlite3.Connection = Depends(get_db)) -> RoomJoinResponse:
     """Validate room code and retrieve linked address/session/drawing data."""
-    sqlite_cursor.execute(
+    cursor = db.cursor()
+    cursor.execute(
         """
         SELECT r.RoomCode, r.RoomAddress, r.SessionID, r.DrawingID, d.GameType 
         FROM ActiveRooms r
@@ -73,7 +76,7 @@ def join_room(room_code: str) -> RoomJoinResponse:
         WHERE r.RoomCode = ?
         """, (room_code.upper(),)
     )
-    row = sqlite_cursor.fetchone()
+    row = cursor.fetchone()
 
     if row:
         return RoomJoinResponse(roomCode=row[0], roomAddress=row[1], sessionID=row[2], drawingID=row[3], gameType=row[4])
@@ -82,11 +85,12 @@ def join_room(room_code: str) -> RoomJoinResponse:
 
 
 @router.delete("/{room_code}", summary="Delete room")
-def delete_room(room_code: str):
+def delete_room(room_code: str, db: sqlite3.Connection = Depends(get_db)):
     """Delete room (in SQLite DB)"""
-    sqlite_cursor.execute("DELETE FROM ActiveRooms WHERE RoomCode = ?", (room_code.upper(),))
-    if sqlite_cursor.rowcount == 0:
+    cursor = db.cursor()
+    cursor.execute("DELETE FROM ActiveRooms WHERE RoomCode = ?", (room_code.upper(),))
+    if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Room not found")
 
-    sqlite_conn.commit()
+    db.commit()
     return {"message": "Room deleted successfully."}

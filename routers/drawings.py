@@ -2,10 +2,10 @@ import sqlite3
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from database import mongo_collection, sqlite_conn, sqlite_cursor
+from database import mongo_collection, get_db
 from models.mongodb.models import Drawing, GameType, Line, TrackedBehavior, Collaborator, PlacedModel, Metadata
 from models.sqlite.models import DrawingMeta
 from utils import get_date
@@ -50,12 +50,14 @@ class DrawingUpdateMessage(BaseModel):
 
 
 @router.post("/", response_model=Drawing, summary="Save new drawing (MongoDB) and link metadata (SQLite)")
-def save_drawing(message: DrawingSaveMessage) -> Drawing:
+def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(get_db)) -> Drawing:
     """Saves a new drawing using DrawingSaveMessage, generating IDs and resolving missing Session data."""
 
+    cursor = db.cursor()
+
     # 1. Check if the Session is closed and fetch missing metadata
-    sqlite_cursor.execute("SELECT EndDate, ShowBoy, ShowGirl FROM Sessions WHERE ID = ?", (message.sessionID,))
-    session_row = sqlite_cursor.fetchone()
+    cursor.execute("SELECT EndDate, ShowBoy, ShowGirl FROM Sessions WHERE ID = ?", (message.sessionID,))
+    session_row = cursor.fetchone()
 
     if session_row is None:
         raise HTTPException(status_code=400, detail="Provided SessionID does not exist.")
@@ -97,7 +99,7 @@ def save_drawing(message: DrawingSaveMessage) -> Drawing:
     # 6. Save linking metadata to SQLite
     try:
         virtual_path = f"VRDrawing3D/Drawings/{metadata.owner}/{drawing_name}/{drawing_name}.json"
-        sqlite_cursor.execute(
+        cursor.execute(
             """
             INSERT INTO DrawingMeta (ID, PlayerID, Name, Path, GameType, SessionID)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -109,7 +111,7 @@ def save_drawing(message: DrawingSaveMessage) -> Drawing:
                 int(metadata.gameType),
                 metadata.sessionID
             ))
-        sqlite_conn.commit()
+        db.commit()
     except sqlite3.IntegrityError as e:
         # Rollback Mongo insertion if SQLite fails
         mongo_collection.delete_one({"metadata.id": metadata.id})
@@ -122,7 +124,7 @@ def save_drawing(message: DrawingSaveMessage) -> Drawing:
 
 
 @router.put("/{drawing_id}", response_model=Drawing, summary="Update an existing drawing")
-def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage):
+def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite3.Connection = Depends(get_db)):
     """Updates specific properties of an existing drawing in MongoDB"""
 
     existing = mongo_collection.find_one({"metadata.id": drawing_id})
@@ -147,8 +149,9 @@ def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage):
     # Process SQLite Diffs
     if update_msg.name is not None:
         try:
-            sqlite_cursor.execute("UPDATE DrawingMeta SET Name = ? WHERE ID = ?", (update_msg.name, drawing_id))
-            sqlite_conn.commit()
+            cursor = db.cursor()
+            cursor.execute("UPDATE DrawingMeta SET Name = ? WHERE ID = ?", (update_msg.name, drawing_id))
+            db.commit()
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to update SQLite name: {str(e)}")
 
@@ -158,7 +161,7 @@ def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage):
 
 
 @router.post("/import", response_model=Drawing, summary="Import a fully formed drawing directly")
-def import_drawing(drawing: Drawing) -> Drawing:
+def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db)) -> Drawing:
     """Import an already established drawing (JSON format) directly into the databases"""
 
     drawing_dict = drawing.model_dump()
@@ -172,7 +175,8 @@ def import_drawing(drawing: Drawing) -> Drawing:
         drawing_name = f"Drawing_{drawing.metadata.id}"  # TODO: Templates should be defined in the config
         virtual_path = f"VRDrawing3D/Drawings/{drawing.metadata.owner}/{drawing_name}/{drawing_name}.json"
 
-        sqlite_cursor.execute(
+        cursor = db.cursor()
+        cursor.execute(
             """
             REPLACE INTO DrawingMeta (ID, PlayerID, Name, Path, GameType, SessionID)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -184,7 +188,7 @@ def import_drawing(drawing: Drawing) -> Drawing:
                 int(drawing.metadata.gameType),
                 drawing.metadata.sessionID
             ))
-        sqlite_conn.commit()
+        db.commit()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to import drawing to SQLite: {str(e)}")
 
@@ -192,11 +196,12 @@ def import_drawing(drawing: Drawing) -> Drawing:
 
 
 @router.get("/", response_model=List[str], summary="Get list of drawing IDs")
-def get_drawing_ids() -> List[str]:
+def get_drawing_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of drawing IDs (from SQLite DB)"""
     try:
-        sqlite_cursor.execute("SELECT ID FROM DrawingMeta")
-        rows = sqlite_cursor.fetchall()
+        cursor = db.cursor()
+        cursor.execute("SELECT ID FROM DrawingMeta")
+        rows = cursor.fetchall()
         return [row[0] for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch drawing IDs: {str(e)}")
@@ -215,15 +220,16 @@ def get_drawing(drawing_id: str):
 
 
 @router.get("/{drawing_id}/meta", response_model=DrawingMeta, summary="Get drawing metadata by ID")
-def get_drawing_meta(drawing_id: str) -> DrawingMeta:
+def get_drawing_meta(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) -> DrawingMeta:
     """Get drawing meta (DrawingMeta from SQLite DB)"""
 
     try:
-        sqlite_cursor.execute(
+        cursor = db.cursor()
+        cursor.execute(
             "SELECT ID, PlayerID, Name, Path, GameType, SessionID FROM DrawingMeta WHERE ID = ?",
             (drawing_id,)
         )
-        row = sqlite_cursor.fetchone()
+        row = cursor.fetchone()
 
         if row:
             return DrawingMeta(
@@ -243,7 +249,7 @@ def get_drawing_meta(drawing_id: str) -> DrawingMeta:
 
 
 @router.delete("/{drawing_id}", summary="Delete a drawing from MongoDB and SQLite")
-def delete_drawing(drawing_id: str) -> dict[str, str | bool]:
+def delete_drawing(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str | bool]:
     """Delete drawing"""
 
     # Delete from MongoDB
@@ -252,9 +258,10 @@ def delete_drawing(drawing_id: str) -> dict[str, str | bool]:
 
     # Delete from SQLite
     try:
-        sqlite_cursor.execute("DELETE FROM DrawingMeta WHERE ID = ?", (drawing_id,))
-        sqlite_rows_affected = sqlite_cursor.rowcount
-        sqlite_conn.commit()
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM DrawingMeta WHERE ID = ?", (drawing_id,))
+        sqlite_rows_affected = cursor.rowcount
+        db.commit()
         sqlite_success = sqlite_rows_affected > 0
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete from SQLite: {str(e)}")

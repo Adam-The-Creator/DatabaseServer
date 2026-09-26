@@ -1,7 +1,8 @@
+import sqlite3
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from database import sqlite_conn, sqlite_cursor
+from database import get_db
 from utils import get_date, encrypt, generate_salt
 
 # Create the router instance
@@ -31,15 +32,17 @@ class SignUpMessage(BaseModel):
 
 
 @router.post("/signup", summary="Register a new player")
-def sign_up(sign_up_data: SignUpMessage):
+def sign_up(sign_up_data: SignUpMessage, db: sqlite3.Connection = Depends(get_db)):
     """Signup"""
 
     if not sign_up_data.username or not sign_up_data.password:
         raise HTTPException(status_code=400, detail="Sign up message is invalid.")
 
+    cursor = db.cursor()
+
     # 1. Check if username exists
-    sqlite_cursor.execute("SELECT COUNT(*) FROM Players WHERE Username = ?", (sign_up_data.username,))
-    if sqlite_cursor.fetchone()[0] > 0:
+    cursor.execute("SELECT COUNT(*) FROM Players WHERE Username = ?", (sign_up_data.username,))
+    if cursor.fetchone()[0] > 0:
         raise HTTPException(status_code=409, detail="Username already exists.")
 
     # 2. Generate IDs and cryptographic data
@@ -53,41 +56,43 @@ def sign_up(sign_up_data: SignUpMessage):
 
     try:
         # 3. Insert into Passwords table
-        sqlite_cursor.execute(
+        cursor.execute(
             "INSERT INTO Passwords (ID, Salt, Password) VALUES (?, ?, ?)",
             (password_id, salt, password_hash)
         )
 
         # 4. Insert into PlayerInfo table (with default empty values as in C#)
-        sqlite_cursor.execute(
+        cursor.execute(
             "INSERT INTO PlayerInfo (ID, Name, Gender, Age, DominantHand) VALUES (?, ?, ?, ?, ?)",
             (player_info_id, None, None, 0, None)
         )
 
         # 5. Insert into Players table
-        sqlite_cursor.execute(
+        cursor.execute(
             "INSERT INTO Players (ID, Username, PasswordId, PlayerInfoID, SignedIn, Created, Role) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (player_id, sign_up_data.username, password_id, player_info_id, None, created_date, sign_up_data.role)
         )
 
-        sqlite_conn.commit()
+        db.commit()
         return {"message": "User signed up successfully.", "playerId": player_id}
 
     except Exception as e:
-        sqlite_conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Database transaction failed: {str(e)}")
 
 
 @router.post("/login", summary="Authenticate a player")
-def login(login_data: LoginMessage):
+def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
     """Login"""
 
     if not login_data.username or not login_data.password:
         raise HTTPException(status_code=400, detail="Login message is invalid.")
 
+    cursor = db.cursor()
+
     # 1. Find user by Username
-    sqlite_cursor.execute("SELECT ID, PasswordID FROM Players WHERE Username = ?", (login_data.username,))
-    user_row = sqlite_cursor.fetchone()
+    cursor.execute("SELECT ID, PasswordID FROM Players WHERE Username = ?", (login_data.username,))
+    user_row = cursor.fetchone()
 
     if not user_row:
         raise HTTPException(status_code=401, detail="User not found or Invalid credentials.")
@@ -95,8 +100,8 @@ def login(login_data: LoginMessage):
     player_id, password_data_id = user_row[0], user_row[1]
 
     # 2. Retrieve Password Data (Salt and Hash)
-    sqlite_cursor.execute("SELECT Salt, Password FROM Passwords WHERE ID = ?", (password_data_id,))
-    password_row = sqlite_cursor.fetchone()
+    cursor.execute("SELECT Salt, Password FROM Passwords WHERE ID = ?", (password_data_id,))
+    password_row = cursor.fetchone()
 
     if not password_row:
         raise HTTPException(status_code=500, detail="Password data not found for user, database inconsistency.")
@@ -108,11 +113,11 @@ def login(login_data: LoginMessage):
         # 4. Success! Update the SignedIn timestamp
         current_time = get_date()
         try:
-            sqlite_cursor.execute(
+            cursor.execute(
                 "UPDATE Players SET SignedIn = ? WHERE ID = ?",
                 (current_time, player_id)
             )
-            sqlite_conn.commit()
+            db.commit()
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to update login time: {str(e)}")
 

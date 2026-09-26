@@ -2,10 +2,10 @@ import sqlite3
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from database import sqlite_cursor, sqlite_conn, mongo_collection
+from database import get_db, mongo_collection
 from models.mongodb.models import Drawing
 from models.sqlite.models import DrawingMeta, Session
 from utils import get_date
@@ -52,16 +52,17 @@ class SessionUpdateMessage(BaseModel):
 
 @router.get("/{session_id}/drawings", response_model=List[DrawingMeta],
             summary="Get drawing metadata for a specific session")
-def get_drawings(session_id: str) -> List[DrawingMeta]:
+def get_drawings(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> List[DrawingMeta]:
     """Get list of drawing meta for session (DrawingMeta from SQLite DB)"""
 
     drawings = []
     try:
-        sqlite_cursor.execute(
+        cursor = db.cursor()
+        cursor.execute(
             "SELECT ID, PlayerID, Name, Path, GameType, SessionID FROM DrawingMeta WHERE SessionID = ? ORDER BY Name ASC",
             (session_id,)
         )
-        rows = sqlite_cursor.fetchall()
+        rows = cursor.fetchall()
         for row in rows:
             drawings.append(DrawingMeta(
                 id=row[0],
@@ -90,14 +91,15 @@ def get_drawing_data(session_id: str, drawing_id: str):
 
 
 @router.get("/{session_id}", response_model=Session, summary="Get session info for session")
-def get_session_info(session_id: str) -> Session:
+def get_session_info(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> Session:
     """Get session info for session (Session from SQLite DB)"""
 
-    sqlite_cursor.execute(
+    cursor = db.cursor()
+    cursor.execute(
         "SELECT ID, Name, Description, StartDate, EndDate, ShowBoy, ShowGirl, Multiplayer FROM Sessions WHERE ID = ?",
         (session_id,)
     )
-    row = sqlite_cursor.fetchone()
+    row = cursor.fetchone()
     if row:
         return Session(
             id=row[0],
@@ -113,37 +115,40 @@ def get_session_info(session_id: str) -> Session:
 
 
 @router.get("/{session_id}/players", response_model=List[str], summary="Get list of player IDs participated")
-def get_participating_players(session_id: str) -> List[str]:
+def get_participating_players(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of player IDs those are participated on that session (from SQLite DB)"""
 
     try:
+        cursor = db.cursor()
         # Fetch distinct player IDs associated with drawings in this session
-        sqlite_cursor.execute("SELECT DISTINCT PlayerID FROM DrawingMeta WHERE SessionID = ?", (session_id,))
-        rows = sqlite_cursor.fetchall()
+        cursor.execute("SELECT DISTINCT PlayerID FROM DrawingMeta WHERE SessionID = ?", (session_id,))
+        rows = cursor.fetchall()
         return [row[0] for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch players: {str(e)}")
 
 
 @router.get("/", response_model=List[str], summary="Get list of session IDs")
-def get_session_ids() -> List[str]:
+def get_session_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of session IDs (from SQLite DB)"""
 
     try:
-        sqlite_cursor.execute("SELECT ID FROM Sessions ORDER BY StartDate ASC")
-        rows = sqlite_cursor.fetchall()
+        cursor = db.cursor()
+        cursor.execute("SELECT ID FROM Sessions ORDER BY StartDate ASC")
+        rows = cursor.fetchall()
         return [row[0] for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch session IDs: {str(e)}")
 
 
 @router.get("/latest/id", response_model=str, summary="Get latest session ID")
-def get_latest_session_id() -> str:
+def get_latest_session_id(db: sqlite3.Connection = Depends(get_db)) -> str:
     """Get latest session ID (from SQLite DB)"""
     try:
+        cursor = db.cursor()
         # SQLite can order the ISO-like date string (yyyy.MM.dd-HH:mm) lexicographically
-        sqlite_cursor.execute("SELECT ID FROM Sessions ORDER BY StartDate DESC LIMIT 1")
-        row = sqlite_cursor.fetchone()
+        cursor.execute("SELECT ID FROM Sessions ORDER BY StartDate DESC LIMIT 1")
+        row = cursor.fetchone()
 
         if row:
             return row[0]
@@ -156,14 +161,15 @@ def get_latest_session_id() -> str:
 
 
 @router.post("/", response_model=Session, summary="Create new session")
-def create_session(session_data: SessionCreateMessage) -> Session:
+def create_session(session_data: SessionCreateMessage, db: sqlite3.Connection = Depends(get_db)) -> Session:
     """Create new session (in SQLite DB)"""
 
     session_id = str(uuid.uuid4())
     start_date = get_date()
 
     try:
-        sqlite_cursor.execute(
+        cursor = db.cursor()
+        cursor.execute(
             """
             INSERT INTO Sessions (ID, Name, Description, StartDate, EndDate, ShowBoy, ShowGirl, Multiplayer) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -174,7 +180,7 @@ def create_session(session_data: SessionCreateMessage) -> Session:
                 session_data.showGirl, session_data.multiplayer
             )
         )
-        sqlite_conn.commit()
+        db.commit()
 
         return Session(
             id=session_id,
@@ -187,17 +193,19 @@ def create_session(session_data: SessionCreateMessage) -> Session:
             multiplayer=session_data.multiplayer
         )
     except Exception as e:
-        sqlite_conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
 
 
 @router.put("/{session_id}", response_model=Session, summary="Update session")
-def update_session(session_id: str, update_data: SessionUpdateMessage) -> Session:
+def update_session(session_id: str, update_data: SessionUpdateMessage, db: sqlite3.Connection = Depends(get_db)) -> Session:
     """Update session (in SQLite DB)"""
 
+    cursor = db.cursor()
+
     # 1. Verify existence
-    sqlite_cursor.execute("SELECT ID FROM Sessions WHERE ID = ?", (session_id,))
-    if not sqlite_cursor.fetchone():
+    cursor.execute("SELECT ID FROM Sessions WHERE ID = ?", (session_id,))
+    if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Session not found")
 
     # 2. Formulate dynamic SQL query for diffs
@@ -228,53 +236,55 @@ def update_session(session_id: str, update_data: SessionUpdateMessage) -> Sessio
 
     # 3. Apply updates
     try:
-        sqlite_cursor.execute(query, tuple(params))
-        sqlite_conn.commit()
+        cursor.execute(query, tuple(params))
+        db.commit()
 
         # Return the modified object
-        sqlite_cursor.execute(
+        cursor.execute(
             "SELECT ID, Name, Description, StartDate, EndDate, ShowBoy, ShowGirl, Multiplayer FROM Sessions WHERE ID = ?",
             (session_id,)
         )
-        row = sqlite_cursor.fetchone()
+        row = cursor.fetchone()
         return Session(
             id=row[0], name=row[1], description=row[2], startDate=row[3],
             endDate=row[4], showBoy=row[5], showGirl=row[6], multiplayer=row[7]
         )
     except Exception as e:
-        sqlite_conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to update session: {str(e)}")
 
 
 @router.put("/{session_id}/close", summary="Close session")
-def close_session(session_id: str) -> dict[str, str]:
+def close_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
     """Close session (set endDate) (in SQLite DB)"""
 
     end_date = get_date()
+    cursor = db.cursor()
 
-    # We only update if it exists and hasn't been closed already
-    sqlite_cursor.execute(
+    # Only update if it exists and hasn't been closed already
+    cursor.execute(
         "UPDATE Sessions SET EndDate = ? WHERE ID = ? AND EndDate IS NULL",
         (end_date, session_id)
     )
 
-    if sqlite_cursor.rowcount == 0:
+    if cursor.rowcount == 0:
         raise HTTPException(status_code=400, detail="Session not found or already closed")
 
-    sqlite_conn.commit()
+    db.commit()
     return {"message": "Session closed successfully.", "endDate": end_date}
 
 
 @router.delete("/{session_id}", summary="Delete session")
-def delete_session(session_id: str) -> dict[str, str]:
+def delete_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
     """Delete session (in SQLite DB)"""
 
     try:
-        sqlite_cursor.execute("DELETE FROM Sessions WHERE ID = ?", (session_id,))
-        if sqlite_cursor.rowcount == 0:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM Sessions WHERE ID = ?", (session_id,))
+        if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        sqlite_conn.commit()
+        db.commit()
         return {"message": "Session deleted successfully."}
     except sqlite3.IntegrityError:
         # Triggers if the Session is tied to existing Drawings via Foreign Keys
