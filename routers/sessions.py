@@ -291,7 +291,12 @@ def delete_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) ->
         db.commit()
         return {"message": "Session deleted successfully."}
     except sqlite3.IntegrityError:
-        # Triggers if the Session is tied to existing Drawings via Foreign Keys
-        raise HTTPException(status_code=400, detail="Cannot delete a session that has associated drawings.")
+        # Triggers if the Session is still referenced by a FOREIGN KEY - either an
+        # existing Drawing (DrawingMeta.SessionID) or an active room
+        # (ActiveRooms.SessionID); both point at Sessions.ID.
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a session that still has drawings or an active room linked to it."
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")

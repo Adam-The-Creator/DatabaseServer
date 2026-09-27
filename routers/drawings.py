@@ -281,19 +281,40 @@ def get_drawing_meta(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) 
 def delete_drawing(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str | bool]:
     """Delete drawing"""
 
-    # Delete from MongoDB
-    mongo_result = database.mongo_collection.delete_one({"metadata.id": drawing_id})
-    mongo_success = mongo_result.deleted_count > 0
+    cursor = db.cursor()
 
-    # Delete from SQLite
+    # 1. Delete the SQLite linking row FIRST. ActiveRooms.DrawingID has a FOREIGN
+    #    KEY pointing at DrawingMeta.ID, so if a room is still linked to this
+    #    drawing, SQLite refuses the delete with an IntegrityError. We handle that
+    #    specifically instead of letting it fall through as a generic 500 - and
+    #    because MongoDB hasn't been touched yet at this point, failing here
+    #    leaves both stores exactly as they were (no orphaned/half-deleted state).
     try:
-        cursor = db.cursor()
         execute_with_retry(cursor, "DELETE FROM DrawingMeta WHERE ID = ?", (drawing_id,))
         sqlite_rows_affected = cursor.rowcount
-        db.commit()
-        sqlite_success = sqlite_rows_affected > 0
+    except sqlite3.IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete drawing: it still has an active multiplayer room linked to it. Delete that room first."
+        )
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete from SQLite: {str(e)}")
+
+    # 2. Only now remove the drawing's content from MongoDB, and only commit the
+    #    pending SQLite delete once this has actually succeeded. If the Mongo
+    #    delete fails, rolling back restores the SQLite row too, so the two
+    #    stores can't end up disagreeing about whether the drawing still exists.
+    try:
+        mongo_result = database.mongo_collection.delete_one({"metadata.id": drawing_id})
+        mongo_success = mongo_result.deleted_count > 0
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete from MongoDB: {str(e)}")
+
+    db.commit()
+    sqlite_success = sqlite_rows_affected > 0
 
     if not mongo_success and not sqlite_success:
         raise HTTPException(status_code=404, detail="Drawing not found in any database.")
