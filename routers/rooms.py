@@ -35,14 +35,13 @@ class RoomJoinResponse(BaseModel):
 # - Create new room (in SQLite DB)
 # - Validate room code
 # - Delete room (in SQLite DB)
-# TODO: Add more GET endpoints for more validation
-#       - Get room ID
-#       - Get room name
-#       - Get room address
-#       - Get sessionID for room
-#       - Get drawingID for room
-#       - Get hostID for room
-#       - Get gameType for room
+# - Get room ID
+# - Get room name
+# - Get room address
+# - Get sessionID for room
+# - Get drawingID for room
+# - Get hostID for room
+# - Get gameType for room
 
 
 @router.post("/", response_model=ActiveRoom, summary="Create new room")
