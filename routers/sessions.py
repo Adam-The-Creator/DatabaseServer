@@ -9,12 +9,14 @@ import database
 from database import get_db, execute_with_retry
 from models.mongodb.models import Drawing
 from models.sqlite.models import DrawingMeta, Session
+from security import get_current_player, require_psychologist
 from utils import get_date
 
 # Create the router instance
 router = APIRouter(
     prefix="/sessions",
-    tags=["Sessions"]
+    tags=["Sessions"],
+    dependencies=[Depends(get_current_player)],
 )
 
 
@@ -49,10 +51,14 @@ class SessionUpdateMessage(BaseModel):
 # - Update session (in SQLite DB)
 # - Close session (set endDate) (in SQLite DB)
 # - Delete session (in SQLite DB)
+#
+# Access: every endpoint requires a valid token (router-level dependency). Players may read a single
+# session (and the latest session ID) and a drawing by ID; everything that lists or changes sessions,
+# or lists a session's drawings/players, is Psychologist-only.
 
 
 @router.get("/{session_id}/drawings", response_model=List[DrawingMeta],
-            summary="Get drawing metadata for a specific session")
+            summary="Get drawing metadata for a specific session", dependencies=[Depends(require_psychologist)])
 def get_drawings(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> List[DrawingMeta]:
     """Get list of drawing meta for session (DrawingMeta from SQLite DB)"""
 
@@ -115,7 +121,8 @@ def get_session_info(session_id: str, db: sqlite3.Connection = Depends(get_db)) 
     raise HTTPException(status_code=404, detail="Session not found")
 
 
-@router.get("/{session_id}/players", response_model=List[str], summary="Get list of player IDs participated")
+@router.get("/{session_id}/players", response_model=List[str], summary="Get list of player IDs participated",
+            dependencies=[Depends(require_psychologist)])
 def get_participating_players(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of player IDs those are participated on that session (from SQLite DB)"""
 
@@ -129,7 +136,7 @@ def get_participating_players(session_id: str, db: sqlite3.Connection = Depends(
         raise HTTPException(status_code=500, detail=f"Failed to fetch players: {str(e)}")
 
 
-@router.get("/", response_model=List[str], summary="Get list of session IDs")
+@router.get("/", response_model=List[str], summary="Get list of session IDs", dependencies=[Depends(require_psychologist)])
 def get_session_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of session IDs (from SQLite DB)"""
 
@@ -161,7 +168,7 @@ def get_latest_session_id(db: sqlite3.Connection = Depends(get_db)) -> str:
         raise HTTPException(status_code=500, detail=f"Failed to fetch the latest session ID: {str(e)}")
 
 
-@router.post("/", response_model=Session, summary="Create new session")
+@router.post("/", response_model=Session, summary="Create new session", dependencies=[Depends(require_psychologist)])
 def create_session(session_data: SessionCreateMessage, db: sqlite3.Connection = Depends(get_db)) -> Session:
     """Create new session (in SQLite DB)"""
 
@@ -199,7 +206,7 @@ def create_session(session_data: SessionCreateMessage, db: sqlite3.Connection = 
         raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
 
 
-@router.put("/{session_id}", response_model=Session, summary="Update session")
+@router.put("/{session_id}", response_model=Session, summary="Update session", dependencies=[Depends(require_psychologist)])
 def update_session(session_id: str, update_data: SessionUpdateMessage, db: sqlite3.Connection = Depends(get_db)) -> Session:
     """Update session (in SQLite DB)"""
 
@@ -256,7 +263,7 @@ def update_session(session_id: str, update_data: SessionUpdateMessage, db: sqlit
         raise HTTPException(status_code=500, detail=f"Failed to update session: {str(e)}")
 
 
-@router.put("/{session_id}/close", summary="Close session")
+@router.put("/{session_id}/close", summary="Close session", dependencies=[Depends(require_psychologist)])
 def close_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
     """Close session (set endDate) (in SQLite DB)"""
 
@@ -278,7 +285,7 @@ def close_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> 
     return {"message": "Session closed successfully.", "endDate": end_date}
 
 
-@router.delete("/{session_id}", summary="Delete session")
+@router.delete("/{session_id}", summary="Delete session", dependencies=[Depends(require_psychologist)])
 def delete_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
     """Delete session (in SQLite DB)"""
 

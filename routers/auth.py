@@ -1,8 +1,10 @@
+import hmac
 import sqlite3
 import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database import get_db, execute_with_retry
+from security import create_access_token
 from utils import get_date, encrypt, generate_salt
 
 # Create the router instance
@@ -27,9 +29,10 @@ class SignUpMessage(BaseModel):
 
 # --- API Endpoints ---
 #
-# - Login
+# - Login (returns the JWT access token used by every other endpoint)
 # - Sign up
-
+#
+# These two are the only public endpoints (besides the health check at "/").
 
 @router.post("/signup", summary="Register a new player")
 def sign_up(sign_up_data: SignUpMessage, db: sqlite3.Connection = Depends(get_db)):
@@ -94,13 +97,14 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
     cursor = db.cursor()
 
     # 1. Find user by Username
-    cursor.execute("SELECT ID, PasswordID FROM Players WHERE Username = ?", (login_data.username,))
+    cursor.execute("SELECT ID, PasswordID, Role FROM Players WHERE Username = ?", (login_data.username,))
     user_row = cursor.fetchone()
 
+    # Same message for an unknown user and a wrong password, so usernames cannot be enumerated.
     if not user_row:
-        raise HTTPException(status_code=401, detail="User not found or Invalid credentials.")
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
 
-    player_id, password_data_id = user_row[0], user_row[1]
+    player_id, password_data_id, role = user_row[0], user_row[1], user_row[2]
 
     # 2. Retrieve Password Data (Salt and Hash)
     cursor.execute("SELECT Salt, Password FROM Passwords WHERE ID = ?", (password_data_id,))
@@ -111,8 +115,9 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
 
     salt, stored_password_hash = password_row[0], password_row[1]
 
-    # 3. Validate Password Hash
-    if stored_password_hash == encrypt(login_data.password + salt):
+    # 3. Validate Password Hash (constant-time comparison)
+    expected_hash = encrypt(login_data.password + salt)
+    if hmac.compare_digest((stored_password_hash or "").encode("utf-8"), expected_hash.encode("utf-8")):
         # 4. Success! Update the SignedIn timestamp
         current_time = get_date()
         try:
@@ -126,6 +131,13 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
             db.rollback()
             raise HTTPException(status_code=500, detail=f"Failed to update login time: {str(e)}")
 
-        return {"message": "Login successful.", "playerId": player_id}
+        access_token, expires_in = create_access_token(player_id, role)
+        return {
+            "message": "Login successful.",
+            "playerId": player_id,
+            "accessToken": access_token,
+            "tokenType": "bearer",
+            "expiresIn": expires_in,
+        }
     else:
-        raise HTTPException(status_code=401, detail="Invalid password.")
+        raise HTTPException(status_code=401, detail="Invalid username or password.")

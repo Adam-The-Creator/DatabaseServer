@@ -6,12 +6,14 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database import get_db, execute_with_retry
 from models.sqlite.models import ActiveRoom
+from security import CurrentPlayer, get_current_player
 
 
 # Create the router instance
 router = APIRouter(
     prefix="/rooms",
     tags=["Rooms"],
+    dependencies=[Depends(get_current_player)],
 )
 
 # --- DTOs ---
@@ -42,11 +44,18 @@ class RoomJoinResponse(BaseModel):
 # - Get drawingID for room
 # - Get hostID for room
 # - Get gameType for room
+#
+# Access: every endpoint requires a valid token (router-level dependency). Looking a room up (join) is
+# open to any logged-in player; creating a room is only possible as its host, and only the host can delete it.
 
 
 @router.post("/", response_model=ActiveRoom, summary="Create new room")
-def create_room(req: RoomCreateRequest, db: sqlite3.Connection = Depends(get_db)) -> ActiveRoom:
+def create_room(req: RoomCreateRequest, db: sqlite3.Connection = Depends(get_db),
+                current: CurrentPlayer = Depends(get_current_player)) -> ActiveRoom:
     """Create new room (in SQLite DB) generating a UUID and 6-char shortcode."""
+    if req.hostID != current.id:
+        raise HTTPException(status_code=403, detail="A room can only be created for the logged-in player as host.")
+
     room_id = str(uuid.uuid4())
     room_code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
@@ -93,9 +102,18 @@ def join_room(room_code: str, db: sqlite3.Connection = Depends(get_db)) -> RoomJ
 
 
 @router.delete("/{room_code}", summary="Delete room")
-def delete_room(room_code: str, db: sqlite3.Connection = Depends(get_db)):
+def delete_room(room_code: str, db: sqlite3.Connection = Depends(get_db),
+                current: CurrentPlayer = Depends(get_current_player)):
     """Delete room (in SQLite DB)"""
     cursor = db.cursor()
+
+    cursor.execute("SELECT HostID FROM ActiveRooms WHERE RoomCode = ?", (room_code.upper(),))
+    row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    if row[0] != current.id:
+        raise HTTPException(status_code=403, detail="Only the host can delete the room.")
+
     execute_with_retry(cursor, "DELETE FROM ActiveRooms WHERE RoomCode = ?", (room_code.upper(),))
     if cursor.rowcount == 0:
         db.rollback()

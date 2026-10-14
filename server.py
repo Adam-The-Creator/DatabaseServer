@@ -8,6 +8,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 
 import config
 import database
+import security
 from routers import drawings, players, auth, sessions, rooms
 
 
@@ -32,6 +33,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ ERROR: Failed to setup SQLite: {e}")
         raise
+
+    if security.SECRET_IS_EPHEMERAL:
+        print(f"⚠️ {config.JWT_SECRET_ENV_VAR} is not set: using a random secret for this run, "
+              "so issued tokens become invalid when the server restarts.")
 
     yield  # <-- the app serves requests while suspended here
 

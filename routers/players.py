@@ -9,11 +9,13 @@ from database import get_db, execute_with_retry
 from models.mongodb.models import Drawing
 from models.sqlite.models import DrawingMeta
 from models.sqlite.models import PlayerInfo
+from security import get_current_player, require_psychologist, self_only, self_or_psychologist
 
 # Create the router instance
 router = APIRouter(
     prefix="/players",
     tags=["Players"],
+    dependencies=[Depends(get_current_player)],
 )
 
 
@@ -44,9 +46,14 @@ class PlayerInfoUpdateMessage(BaseModel):
 # - Update age of player (in SQLite)
 # - Update dominant hand of player (in SQLite)
 # - Update player info of player (PlayerInfo in SQLite)
+#
+# Access: every endpoint requires a valid token (router-level dependency). Reading a player's data is
+# allowed for that player and for Psychologists, listing all players is Psychologist-only, and
+# updates are allowed for the player themself only.
 
 
-@router.get("/{user_id}/drawings", response_model=List[DrawingMeta], summary="Get drawing metadata for a specific player")
+@router.get("/{user_id}/drawings", response_model=List[DrawingMeta], summary="Get drawing metadata for a specific player",
+            dependencies=[Depends(self_or_psychologist)])
 def get_drawings(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> List[DrawingMeta]:
     """Get list of drawing meta for player (DrawingMeta from SQLite DB)"""
 
@@ -72,7 +79,8 @@ def get_drawings(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> List
         raise HTTPException(status_code=500, detail=f"Failed to fetch user drawings: {str(e)}")
 
 
-@router.get("/{user_id}/drawings/{drawing_id}", response_model=Drawing, summary="Get full drawing data by ID")
+@router.get("/{user_id}/drawings/{drawing_id}", response_model=Drawing, summary="Get full drawing data by ID",
+            dependencies=[Depends(self_or_psychologist)])
 def get_drawing_data(user_id: str, drawing_id: str):
     """Get drawing data (JSON format) by drawing ID (Drawing from Mongo DB)"""
 
@@ -86,7 +94,7 @@ def get_drawing_data(user_id: str, drawing_id: str):
     raise HTTPException(status_code=404, detail="Drawing not found for this player in MongoDB")
 
 
-@router.get("/{user_id}/name", summary="Get name of player")
+@router.get("/{user_id}/name", summary="Get name of player", dependencies=[Depends(self_or_psychologist)])
 def get_name(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     """Get name of player (from SQLite)"""
 
@@ -101,7 +109,7 @@ def get_name(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/gender", summary="Get gender of player")
+@router.get("/{user_id}/gender", summary="Get gender of player", dependencies=[Depends(self_or_psychologist)])
 def get_gender(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     """Get gender of player (from SQLite)"""
 
@@ -116,7 +124,7 @@ def get_gender(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/age", summary="Get age of player")
+@router.get("/{user_id}/age", summary="Get age of player", dependencies=[Depends(self_or_psychologist)])
 def get_age(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> int:
     """Get age of player (from SQLite)"""
 
@@ -131,7 +139,7 @@ def get_age(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> int:
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/dominant-hand", summary="Get dominant hand of player")
+@router.get("/{user_id}/dominant-hand", summary="Get dominant hand of player", dependencies=[Depends(self_or_psychologist)])
 def get_dominant_hand(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     """Get dominant hand of player (from SQLite)"""
 
@@ -146,7 +154,7 @@ def get_dominant_hand(user_id: str, db: sqlite3.Connection = Depends(get_db)) ->
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/latest-login", summary="Get the date of latest login")
+@router.get("/{user_id}/latest-login", summary="Get the date of latest login", dependencies=[Depends(self_or_psychologist)])
 def get_latest_login(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     """Get the date of latest login (from SQLite)"""
 
@@ -158,7 +166,7 @@ def get_latest_login(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> 
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/registration-date", summary="Get the date of account registration")
+@router.get("/{user_id}/registration-date", summary="Get the date of account registration", dependencies=[Depends(self_or_psychologist)])
 def get_registration_date(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> str:
     """Get the date of account registration (from SQLite)"""
 
@@ -170,7 +178,7 @@ def get_registration_date(user_id: str, db: sqlite3.Connection = Depends(get_db)
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/role", summary="Get the role of player")
+@router.get("/{user_id}/role", summary="Get the role of player", dependencies=[Depends(self_or_psychologist)])
 def get_role(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> int:
     """Get the role of player (from SQLite)"""
 
@@ -182,7 +190,8 @@ def get_role(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> int:
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/{user_id}/info", response_model=PlayerInfo, summary="Get player info of player")
+@router.get("/{user_id}/info", response_model=PlayerInfo, summary="Get player info of player",
+            dependencies=[Depends(self_or_psychologist)])
 def get_player_info(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> PlayerInfo:
     """Get player info of player (PlayerInfo from SQLite)"""
 
@@ -203,7 +212,7 @@ def get_player_info(user_id: str, db: sqlite3.Connection = Depends(get_db)) -> P
     raise HTTPException(status_code=404, detail="Player not found")
 
 
-@router.get("/", response_model=List[str], summary="Get list of player IDs")
+@router.get("/", response_model=List[str], summary="Get list of player IDs", dependencies=[Depends(require_psychologist)])
 def get_player_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of player IDs (from SQLite)"""
 
@@ -216,7 +225,7 @@ def get_player_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
         raise HTTPException(status_code=500, detail=f"Failed to fetch player IDs: {str(e)}")
 
 
-@router.put("/{user_id}/name", summary="Update name of player")
+@router.put("/{user_id}/name", summary="Update name of player", dependencies=[Depends(self_only)])
 def update_player_name(user_id: str, name: str = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
     """Update name of player (in SQLite)"""
 
@@ -233,7 +242,7 @@ def update_player_name(user_id: str, name: str = Body(..., embed=True), db: sqli
     return {"message": "Player name updated successfully."}
 
 
-@router.put("/{user_id}/gender", summary="Update gender of player")
+@router.put("/{user_id}/gender", summary="Update gender of player", dependencies=[Depends(self_only)])
 def update_player_gender(user_id: str, gender: str = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
     """Update gender of player (in SQLite)"""
 
@@ -250,7 +259,7 @@ def update_player_gender(user_id: str, gender: str = Body(..., embed=True), db: 
     return {"message": "Player gender updated successfully."}
 
 
-@router.put("/{user_id}/age", summary="Update age of player")
+@router.put("/{user_id}/age", summary="Update age of player", dependencies=[Depends(self_only)])
 def update_player_age(user_id: str, age: int = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
     """Update age of player (in SQLite)"""
 
@@ -267,7 +276,7 @@ def update_player_age(user_id: str, age: int = Body(..., embed=True), db: sqlite
     return {"message": "Player age updated successfully."}
 
 
-@router.put("/{user_id}/dominant-hand", summary="Update dominant hand of player")
+@router.put("/{user_id}/dominant-hand", summary="Update dominant hand of player", dependencies=[Depends(self_only)])
 def update_player_dominant_hand(user_id: str, dominant_hand: str = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
     """Update dominant hand of player (in SQLite)"""
 
@@ -284,7 +293,7 @@ def update_player_dominant_hand(user_id: str, dominant_hand: str = Body(..., emb
     return {"message": "Player dominant hand updated successfully."}
 
 
-@router.put("/{user_id}/info", summary="Update player info of player")
+@router.put("/{user_id}/info", summary="Update player info of player", dependencies=[Depends(self_only)])
 def update_player_info(user_id: str, info: PlayerInfoUpdateMessage, db: sqlite3.Connection = Depends(get_db)):
     """Update player info of player (PlayerInfo in SQLite)"""
 

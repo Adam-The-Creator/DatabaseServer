@@ -18,6 +18,15 @@ HOST = "127.0.0.1"
 PORT = 8000
 
 
+# --- Authentication (JWT) ---
+# The signing secret is deliberately NOT stored here (this file is committed). Set the environment variable
+# named below to a random string of at least 32 characters. If it is not set, a random secret is generated
+# on every start, so all issued tokens become invalid when the server restarts.
+JWT_SECRET_ENV_VAR = "JWT_SECRET"
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 12
+
+
 # --- CORS Configuration ---
 # List of origins (frontend URLs) allowed to communicate with this API.
 # Use ["*"] to allow any origin (only for local testing, NEVER for production).
@@ -28,5 +37,5 @@ CORS_ORIGINS = [
 ]
 
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_METHODS = ["GET", "POST", "OPTIONS"] # Restrict to needed methods, or ["*"] for all
+CORS_ALLOW_METHODS = ["GET", "POST", "OPTIONS", "PUT", "DELETE"] # Restrict to needed methods, or ["*"] for all
 CORS_ALLOW_HEADERS = ["*"] # Or specific headers like ["Content-Type", "Authorization"]

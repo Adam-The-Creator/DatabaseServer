@@ -9,12 +9,14 @@ import database
 from database import get_db, execute_with_retry
 from models.mongodb.models import Drawing, GameType, Line, TrackedBehavior, Collaborator, PlacedModel, Metadata
 from models.sqlite.models import DrawingMeta
+from security import CurrentPlayer, get_current_player, require_psychologist
 from utils import get_date
 
 # Create the router instance
 router = APIRouter(
     prefix="/drawings",
-    tags=["Drawings"]
+    tags=["Drawings"],
+    dependencies=[Depends(get_current_player)],
 )
 
 # --- DTOs ---
@@ -48,11 +50,35 @@ class DrawingUpdateMessage(BaseModel):
 # - Get drawing data (JSON format) by drawing ID (Drawing from Mongo DB)
 # - Get drawing meta (DrawingMeta from SQLite DB)
 # - Delete drawing (from SQLite DB and Mongo DB)
+#
+# Access: every endpoint requires a valid token (router-level dependency).
+# - Reading a drawing (or its meta) by ID is open to any logged-in player, so a guest can load the host's
+#   drawing after joining a room. Listing all drawing IDs is Psychologist-only.
+# - Save: the owner in the message has to be the caller.
+# - Update: owner, listed collaborator, or anyone while a room is active for that drawing.
+# - Import: the owner has to be the caller (Psychologists may import for anyone).
+# - Delete: owner only.
+
+
+def _find_owner(drawing_id: str, cursor: sqlite3.Cursor) -> Optional[str]:
+    """Owner of an existing drawing: the SQLite link row first, then the MongoDB document (either may be missing)."""
+
+    cursor.execute("SELECT PlayerID FROM DrawingMeta WHERE ID = ?", (drawing_id,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+
+    document = database.mongo_collection.find_one({"metadata.id": drawing_id}, {"metadata.owner": 1})
+    return document["metadata"]["owner"] if document else None
 
 
 @router.post("/", response_model=Drawing, summary="Save new drawing (MongoDB) and link metadata (SQLite)")
-def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(get_db)) -> Drawing:
+def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(get_db),
+                 current: CurrentPlayer = Depends(get_current_player)) -> Drawing:
     """Saves a new drawing using DrawingSaveMessage, generating IDs and resolving missing Session data."""
+
+    if message.owner != current.id:
+        raise HTTPException(status_code=403, detail="A drawing can only be saved for the logged-in player.")
 
     cursor = db.cursor()
 
@@ -136,12 +162,25 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
 
 
 @router.put("/{drawing_id}", response_model=Drawing, summary="Update an existing drawing")
-def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite3.Connection = Depends(get_db)):
+def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite3.Connection = Depends(get_db),
+                   current: CurrentPlayer = Depends(get_current_player)):
     """Updates specific properties of an existing drawing in MongoDB"""
 
     existing = database.mongo_collection.find_one({"metadata.id": drawing_id})
     if not existing:
         raise HTTPException(status_code=404, detail="Drawing not found")
+
+    # The game does not record collaborators yet (the list it sends is always empty), so a guest who joined
+    # through a room would never be listed. An active room means the owner opened the drawing for
+    # collaboration, so it is treated as the collaboration grant for as long as the room exists.
+    metadata = existing.get("metadata", {})
+    is_owner = metadata.get("owner") == current.id
+    is_collaborator = any(c.get("id") == current.id for c in metadata.get("collaborators") or [])
+    if not is_owner and not is_collaborator:
+        room_cursor = db.cursor()
+        room_cursor.execute("SELECT 1 FROM ActiveRooms WHERE DrawingID = ? LIMIT 1", (drawing_id,))
+        if room_cursor.fetchone() is None:
+            raise HTTPException(status_code=403, detail="Only the owner or a collaborator can update this drawing.")
 
     updates = {}
 
@@ -181,10 +220,19 @@ def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite
 
 
 @router.post("/import", response_model=Drawing, summary="Import a fully formed drawing directly")
-def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db)) -> Drawing:
+def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db),
+                   current: CurrentPlayer = Depends(get_current_player)) -> Drawing:
     """Import an already established drawing (JSON format) directly into the databases"""
 
     cursor = db.cursor()
+
+    # The import replaces an existing drawing with the same ID, so neither the new owner nor the
+    # current owner of that ID may be somebody else (unless the caller is a Psychologist).
+    if not current.is_psychologist:
+        existing_owner = _find_owner(drawing.metadata.id, cursor)
+        if drawing.metadata.owner != current.id or (existing_owner is not None and existing_owner != current.id):
+            raise HTTPException(status_code=403, detail="A drawing can only be imported for the logged-in player.")
+
     drawing_name = f"Drawing_{drawing.metadata.id}"  # TODO: Templates should be defined in the config
     virtual_path = f"VRDrawing3D/Drawings/{drawing.metadata.owner}/{drawing_name}/{drawing_name}.json"
 
@@ -224,7 +272,7 @@ def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db)) -
     return drawing
 
 
-@router.get("/", response_model=List[str], summary="Get list of drawing IDs")
+@router.get("/", response_model=List[str], summary="Get list of drawing IDs", dependencies=[Depends(require_psychologist)])
 def get_drawing_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
     """Get list of drawing IDs (from SQLite DB)"""
     try:
@@ -278,10 +326,16 @@ def get_drawing_meta(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) 
 
 
 @router.delete("/{drawing_id}", summary="Delete a drawing from MongoDB and SQLite")
-def delete_drawing(drawing_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str | bool]:
+def delete_drawing(drawing_id: str, db: sqlite3.Connection = Depends(get_db),
+                   current: CurrentPlayer = Depends(get_current_player)) -> dict[str, str | bool]:
     """Delete drawing"""
 
     cursor = db.cursor()
+
+    # A drawing that exists in neither store has no owner and falls through to the 404 below.
+    owner = _find_owner(drawing_id, cursor)
+    if owner is not None and owner != current.id:
+        raise HTTPException(status_code=403, detail="Only the owner can delete this drawing.")
 
     # 1. Delete the SQLite linking row FIRST. ActiveRooms.DrawingID has a FOREIGN
     #    KEY pointing at DrawingMeta.ID, so if a room is still linked to this
