@@ -24,6 +24,14 @@ def connect_mongo() -> None:
     mongo_db = mongo_client[config.MONGO_DB_NAME]
     mongo_collection = mongo_db[config.COLLECTION_NAME]
 
+    # Every endpoint looks a drawing up by metadata.id, and the analysis filters by session/owner/author. Without
+    # an index each of those is a scan of the whole collection. Not unique: existing data may hold duplicates.
+    try:
+        for field in ("metadata.id", "metadata.sessionID", "metadata.owner", "lines.userID"):
+            mongo_collection.create_index(field)
+    except Exception as e:
+        print(f"⚠️ Could not create the MongoDB indexes (the server works, but lookups are slower): {e}")
+
 
 def close_mongo() -> None:
     """Cleanly closes the MongoDB connection pool. Called on app shutdown."""

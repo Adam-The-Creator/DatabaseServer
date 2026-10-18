@@ -1,13 +1,18 @@
+import math
 import sqlite3
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
+import bson
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 import database
 from database import get_db, execute_with_retry
-from models.mongodb.models import Drawing, GameType, Line, TrackedBehavior, Collaborator, PlacedModel, Metadata
+from models.mongodb.models import (
+    Drawing, GameType, Line, LineStats, TrackedBehavior, Collaborator, PlacedModel, Metadata, DrawingEvent
+)
 from models.sqlite.models import DrawingMeta
 from security import CurrentPlayer, get_current_player, require_psychologist
 from utils import get_date
@@ -31,6 +36,9 @@ class DrawingSaveMessage(BaseModel):
     lines: List[Line]
     trackedBehaviors: Optional[List[TrackedBehavior]] = None
     placedModels: Optional[List[PlacedModel]] = None
+    events: Optional[List[DrawingEvent]] = None
+    appVersion: Optional[str] = None
+    device: Optional[str] = None
 
 
 class DrawingUpdateMessage(BaseModel):
@@ -38,6 +46,7 @@ class DrawingUpdateMessage(BaseModel):
     lines: Optional[List[Line]] = None
     trackedBehaviors: Optional[List[TrackedBehavior]] = None
     placedModels: Optional[List[PlacedModel]] = None
+    events: Optional[List[DrawingEvent]] = None
     collaborators: Optional[List[Collaborator]] = None
 
 
@@ -70,6 +79,115 @@ def _find_owner(drawing_id: str, cursor: sqlite3.Cursor) -> Optional[str]:
 
     document = database.mongo_collection.find_one({"metadata.id": drawing_id}, {"metadata.owner": 1})
     return document["metadata"]["owner"] if document else None
+
+
+# Version of the stored document layout. 2 = utcMs/pressure on points, utcMs on poses, events, line stats and the
+# metadata additions (schemaVersion, appVersion, device, trackingDecimation). Everything added is optional, so
+# drawings of version 1 (the field is absent) still load.
+SCHEMA_VERSION = 2
+
+# MongoDB rejects documents above 16 MiB. The limit used here leaves room for _id and BSON overhead.
+MAX_DOCUMENT_BYTES = 15 * 1024 * 1024
+
+
+def _legacy_timestamp_ms(timestamp: Optional[str]) -> Optional[int]:
+    """Milliseconds of the game's legacy stamp 'yyyy_MM_dd_HH_mm_ss_fff'. It has no time zone, so only the difference
+    between two stamps is meaningful."""
+
+    try:
+        moment = datetime.strptime(timestamp[:19], "%Y_%m_%d_%H_%M_%S").replace(tzinfo=timezone.utc)
+        return int(moment.timestamp()) * 1000 + int(timestamp[20:23])
+    except (TypeError, ValueError):
+        return None
+
+
+def _line_stats(line: Line) -> LineStats:
+    """Length, bounds and duration of a line, derived from its points."""
+
+    points = line.points
+    if not points:
+        return LineStats(pointCount=0, length=0.0)
+
+    first = points[0]
+    last = points[-1]
+    min_x = max_x = first.x
+    min_y = max_y = first.y
+    min_z = max_z = first.z
+    length = 0.0
+    previous = first
+    for point in points:
+        length += math.hypot(point.x - previous.x, point.y - previous.y, point.z - previous.z)
+        min_x = min(min_x, point.x)
+        max_x = max(max_x, point.x)
+        min_y = min(min_y, point.y)
+        max_y = max(max_y, point.y)
+        min_z = min(min_z, point.z)
+        max_z = max(max_z, point.z)
+        previous = point
+
+    start_utc = end_utc = duration = None
+    if first.utcMs is not None and last.utcMs is not None:
+        start_utc, end_utc = first.utcMs, last.utcMs
+        duration = max(0, end_utc - start_utc)
+    else:
+        start_ms = _legacy_timestamp_ms(first.timestamp)
+        end_ms = _legacy_timestamp_ms(last.timestamp)
+        if start_ms is not None and end_ms is not None:
+            duration = max(0, end_ms - start_ms)
+
+    return LineStats(
+        pointCount=len(points),
+        length=length,
+        durationMs=duration,
+        startUtcMs=start_utc,
+        endUtcMs=end_utc,
+        boundsMinX=min_x, boundsMinY=min_y, boundsMinZ=min_z,
+        boundsMaxX=max_x, boundsMaxY=max_y, boundsMaxZ=max_z,
+    )
+
+
+def _bson_size(value: dict) -> int:
+    return len(bson.encode(value))
+
+
+def _fit_tracking(tracked: List[dict], other_bytes: int) -> tuple[List[dict], int]:
+    """
+    Keeps the tracked poses inside the space MongoDB leaves next to the rest of the document (other_bytes).
+    Only the tracking is ever reduced: when it does not fit, every Nth sample is kept (the same N for all players
+    and channels, so the lists stay aligned). Returns the poses and N (1 = untouched).
+
+    The alternative would be a rejected save, which loses the whole drawing.
+    """
+
+    budget = MAX_DOCUMENT_BYTES - other_bytes
+    factor = 1
+    for _ in range(10):
+        candidate = tracked if factor == 1 else [
+            {key: (value[::factor] if isinstance(value, list) else value) for key, value in behavior.items()}
+            for behavior in tracked
+        ]
+        size = _bson_size({"trackedBehaviors": candidate})
+        if size <= budget:
+            return candidate, factor
+        if budget <= 0:
+            break
+        factor = max(factor + 1, math.ceil(factor * size / budget))
+
+    raise HTTPException(status_code=413, detail="The drawing is too large to be stored (MongoDB document size limit).")
+
+
+def _prepare_document(drawing: Drawing) -> dict:
+    """Derives the line stats and makes the drawing fit MongoDB's document size limit. Returns the document to store."""
+
+    for line in drawing.lines:
+        line.stats = _line_stats(line)
+
+    document = drawing.model_dump()
+    other_bytes = _bson_size({key: value for key, value in document.items() if key != "trackedBehaviors"})
+    tracked, factor = _fit_tracking(document.get("trackedBehaviors") or [], other_bytes)
+    document["trackedBehaviors"] = tracked
+    document["metadata"]["trackingDecimation"] = factor if factor > 1 else None
+    return document
 
 
 @router.post("/", response_model=Drawing, summary="Save new drawing (MongoDB) and link metadata (SQLite)")
@@ -110,15 +228,23 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
         sessionID=message.sessionID,
         showBoy=show_boy,
         showGirl=show_girl,
-        sadChildCoordinates=None
+        sadChildCoordinates=None,
+        schemaVersion=SCHEMA_VERSION,
+        appVersion=message.appVersion,
+        device=message.device
     )
 
     drawing = Drawing(
         metadata=metadata,
         lines=message.lines,
         trackedBehaviors=message.trackedBehaviors or [],
-        placedModels=message.placedModels or []
+        placedModels=message.placedModels or [],
+        events=message.events or []
     )
+
+    # Line stats are derived and the document is kept below MongoDB's size limit (may raise 413).
+    document = _prepare_document(drawing)
+    drawing = Drawing.model_validate(document)
 
     # 5. Write the SQLite linking row FIRST, but do not commit yet - it stays
     #    inside an open transaction. If anything below fails, including the
@@ -152,7 +278,7 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
     #    pending SQLite row once this has actually succeeded - that way the two
     #    stores can never end up disagreeing about whether the drawing exists.
     try:
-        database.mongo_collection.insert_one(drawing.model_dump())
+        database.mongo_collection.insert_one(document)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save drawing to MongoDB: {str(e)}")
@@ -186,13 +312,29 @@ def update_drawing(drawing_id: str, update_msg: DrawingUpdateMessage, db: sqlite
 
     # Process Mongo Diffs
     if update_msg.lines is not None:
+        for line in update_msg.lines:
+            line.stats = _line_stats(line)
         updates["lines"] = [line.model_dump() for line in update_msg.lines]
     if update_msg.trackedBehaviors is not None:
         updates["trackedBehaviors"] = [tb.model_dump() for tb in update_msg.trackedBehaviors]
     if update_msg.placedModels is not None:
         updates["placedModels"] = [pm.model_dump() for pm in update_msg.placedModels]
+    if update_msg.events is not None:
+        updates["events"] = [event.model_dump() for event in update_msg.events]
     if update_msg.collaborators is not None:
         updates["metadata.collaborators"] = [c.model_dump() for c in update_msg.collaborators]
+
+    # The stored document is the existing one with the updates applied: keep it below MongoDB's size limit by
+    # thinning the tracking if needed (the existing tracking counts, too, when only the lines grew).
+    projected = {key: value for key, value in existing.items() if key not in ("_id", "trackedBehaviors")}
+    projected.update({key: value for key, value in updates.items() if "." not in key and key != "trackedBehaviors"})
+    tracked, factor = _fit_tracking(
+        updates["trackedBehaviors"] if "trackedBehaviors" in updates else existing.get("trackedBehaviors") or [],
+        _bson_size(projected)
+    )
+    if "trackedBehaviors" in updates or factor > 1:
+        updates["trackedBehaviors"] = tracked
+        updates["metadata.trackingDecimation"] = factor if factor > 1 else None
 
     if updates:
         database.mongo_collection.update_one({"metadata.id": drawing_id}, {"$set": updates})
@@ -233,6 +375,9 @@ def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db),
         if drawing.metadata.owner != current.id or (existing_owner is not None and existing_owner != current.id):
             raise HTTPException(status_code=403, detail="A drawing can only be imported for the logged-in player.")
 
+    # Line stats are derived and the document is kept below MongoDB's size limit (may raise 413).
+    document = _prepare_document(drawing)
+
     drawing_name = f"Drawing_{drawing.metadata.id}"  # TODO: Templates should be defined in the config
     virtual_path = f"VRDrawing3D/Drawings/{drawing.metadata.owner}/{drawing_name}/{drawing_name}.json"
 
@@ -258,10 +403,9 @@ def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db),
         raise HTTPException(status_code=500, detail=f"Failed to import drawing to SQLite: {str(e)}")
 
     try:
-        drawing_dict = drawing.model_dump()
         database.mongo_collection.update_one(
             {"metadata.id": drawing.metadata.id},
-            {"$set": drawing_dict},
+            {"$set": document},
             upsert=True
         )
     except Exception as e:
@@ -269,7 +413,7 @@ def import_drawing(drawing: Drawing, db: sqlite3.Connection = Depends(get_db),
         raise HTTPException(status_code=500, detail=f"Failed to import drawing to MongoDB: {str(e)}")
 
     db.commit()
-    return drawing
+    return Drawing.model_validate(document)
 
 
 @router.get("/", response_model=List[str], summary="Get list of drawing IDs", dependencies=[Depends(require_psychologist)])
