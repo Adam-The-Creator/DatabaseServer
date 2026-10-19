@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 import database
-from database import get_db, execute_with_retry
+from database import DEFAULT_SESSION_ID, get_active_session_id, get_db, execute_with_retry, set_active_session
 from models.mongodb.models import Drawing
 from models.sqlite.models import DrawingMeta, Session
 from security import get_current_player, require_psychologist
@@ -28,6 +28,8 @@ class SessionCreateMessage(BaseModel):
     showBoy: int = 1
     showGirl: int = 1
     multiplayer: int = 0
+    # A new session becomes the active one (new drawings are saved into it) unless the caller says otherwise.
+    activate: bool = True
 
 
 class SessionUpdateMessage(BaseModel):
@@ -47,13 +49,15 @@ class SessionUpdateMessage(BaseModel):
 # - Get list of player IDs those are participated on that session (from SQLite DB)
 # - Get list of session IDs (from SQLite DB)
 # - Get latest session ID (from SQLite DB)
-# - Create new session (in SQLite DB)
+# - Get active session ID (from SQLite DB): one per server, shared by every client; the default session while none is set
+# - Activate session (in SQLite DB)
+# - Create new session (in SQLite DB), which also activates it
 # - Update session (in SQLite DB)
 # - Close session (set endDate) (in SQLite DB)
 # - Delete session (in SQLite DB)
 #
 # Access: every endpoint requires a valid token (router-level dependency). Players may read a single
-# session (and the latest session ID) and a drawing by ID; everything that lists or changes sessions,
+# session (and the latest/active session ID) and a drawing by ID; everything that lists or changes sessions,
 # or lists a session's drawings/players, is Psychologist-only.
 
 
@@ -168,6 +172,37 @@ def get_latest_session_id(db: sqlite3.Connection = Depends(get_db)) -> str:
         raise HTTPException(status_code=500, detail=f"Failed to fetch the latest session ID: {str(e)}")
 
 
+@router.get("/active/id", response_model=str, summary="Get active session ID")
+def get_active_session(db: sqlite3.Connection = Depends(get_db)) -> str:
+    """Get the ID of the session new drawings are saved into (the default session while none is active)"""
+
+    try:
+        return get_active_session_id(db)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch the active session ID: {str(e)}")
+
+
+@router.put("/{session_id}/activate", summary="Set the active session", dependencies=[Depends(require_psychologist)])
+def activate_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
+    """Make the session the active one for every client of this server"""
+
+    cursor = db.cursor()
+    cursor.execute("SELECT EndDate FROM Sessions WHERE ID = ?", (session_id,))
+    row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if row[0] is not None:
+        raise HTTPException(status_code=400, detail="A closed session cannot be activated")
+
+    try:
+        set_active_session(db, session_id)
+        db.commit()
+        return {"message": "Session activated successfully.", "id": session_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to activate session: {str(e)}")
+
+
 @router.post("/", response_model=Session, summary="Create new session", dependencies=[Depends(require_psychologist)])
 def create_session(session_data: SessionCreateMessage, db: sqlite3.Connection = Depends(get_db)) -> Session:
     """Create new session (in SQLite DB)"""
@@ -189,6 +224,8 @@ def create_session(session_data: SessionCreateMessage, db: sqlite3.Connection = 
                 session_data.showGirl, session_data.multiplayer
             )
         )
+        if session_data.activate:
+            set_active_session(db, session_id)
         db.commit()
 
         return Session(
@@ -266,6 +303,10 @@ def update_session(session_id: str, update_data: SessionUpdateMessage, db: sqlit
 @router.put("/{session_id}/close", summary="Close session", dependencies=[Depends(require_psychologist)])
 def close_session(session_id: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, str]:
     """Close session (set endDate) (in SQLite DB)"""
+
+    # Drawings cannot be saved into a closed session, and the default session is what keeps saving possible.
+    if session_id == DEFAULT_SESSION_ID:
+        raise HTTPException(status_code=400, detail="The default session cannot be closed")
 
     end_date = get_date()
     cursor = db.cursor()

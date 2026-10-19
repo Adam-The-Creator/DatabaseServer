@@ -6,7 +6,13 @@ from pymongo import MongoClient
 from pymongo.synchronous.database import Database
 
 import config
+from utils import get_date
 
+
+# The session that is used while no other session is active. It has a fixed ID so it can be created idempotently.
+DEFAULT_SESSION_ID = "default-session"
+DEFAULT_SESSION_NAME = "Default Session"
+DEFAULT_SESSION_DESCRIPTION = "Used for new drawings while no other session is active."
 
 mongo_client: Union[MongoClient, None] = None
 mongo_collection: Union[Database[Mapping[str, Any] | Any], None] = None
@@ -221,7 +227,20 @@ def initialize_sqlite_tables(cursor: sqlite3.Cursor) -> None:
         """
     )
 
-    # 7. Indexes on foreign-key / frequently-filtered columns.
+    # 7. ActiveSession Table: a single row (ID = 1) that points at the session new drawings are saved into.
+    # The pointer is cleared automatically when that session is deleted. Created separately from Sessions (not as
+    # a column on it), because CREATE TABLE IF NOT EXISTS cannot add a column to an existing database.
+    cursor.execute(
+        """
+            CREATE TABLE IF NOT EXISTS ActiveSession (
+                ID INTEGER PRIMARY KEY CHECK (ID = 1),
+                SessionID TEXT,
+                FOREIGN KEY (SessionID) REFERENCES Sessions(ID) ON DELETE SET NULL
+            )
+        """
+    )
+
+    # 8. Indexes on foreign-key / frequently-filtered columns.
     # UNIQUE columns (Players.Username, ActiveRooms.RoomCode, ...) already get an
     # implicit index from their UNIQUE constraint, so those aren't repeated here.
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_drawingmeta_sessionid ON DrawingMeta(SessionID);")
@@ -231,14 +250,60 @@ def initialize_sqlite_tables(cursor: sqlite3.Cursor) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_activerooms_hostid ON ActiveRooms(HostID);")
 
 
+def ensure_default_session(db: sqlite3.Connection) -> str:
+    """
+    Creates the default session if it does not exist (it has a fixed ID, so this is idempotent) and returns its ID.
+    It is the session that is used while no other session is active, so drawings can always be saved.
+    Commits.
+    """
+    cursor = db.cursor()
+    execute_with_retry(
+        cursor,
+        """
+        INSERT OR IGNORE INTO Sessions (ID, Name, Description, StartDate, EndDate, ShowBoy, ShowGirl, Multiplayer)
+        VALUES (?, ?, ?, ?, NULL, 1, 1, 0)
+        """,
+        (DEFAULT_SESSION_ID, DEFAULT_SESSION_NAME, DEFAULT_SESSION_DESCRIPTION, get_date())
+    )
+    db.commit()
+    return DEFAULT_SESSION_ID
+
+
+def get_active_session_id(db: sqlite3.Connection) -> str:
+    """
+    Returns the ID of the active session, which is the same for every client of this server.
+    A deleted or closed session is never returned: the default session is used instead (and created if missing).
+    """
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        SELECT s.ID FROM ActiveSession a JOIN Sessions s ON s.ID = a.SessionID
+        WHERE a.ID = 1 AND s.EndDate IS NULL
+        """
+    )
+    row = cursor.fetchone()
+    return row[0] if row else ensure_default_session(db)
+
+
+def set_active_session(db: sqlite3.Connection, session_id: str) -> None:
+    """Makes the session the active one. Does not commit, so it can be part of a larger transaction."""
+
+    execute_with_retry(
+        db.cursor(),
+        "INSERT OR REPLACE INTO ActiveSession (ID, SessionID) VALUES (1, ?)",
+        (session_id,)
+    )
+
+
 def verify_sqlite_schema() -> None:
     """
-    Opens a one-off connection, ensures all tables/indexes exist, then closes it.
+    Opens a one-off connection, ensures all tables/indexes exist and the default session exists, then closes it.
     Called once from the FastAPI lifespan handler at startup.
     """
     conn = get_sqlite_connection()
     try:
         initialize_sqlite_tables(conn.cursor())
         conn.commit()
+        ensure_default_session(conn)
     finally:
         conn.close()

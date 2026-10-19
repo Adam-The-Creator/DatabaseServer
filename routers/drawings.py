@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 import database
-from database import get_db, execute_with_retry
+from database import get_active_session_id, get_db, execute_with_retry
 from models.mongodb.models import (
     Drawing, GameType, Line, LineStats, TrackedBehavior, Collaborator, PlacedModel, Metadata, DrawingEvent
 )
@@ -32,7 +32,7 @@ class DrawingSaveMessage(BaseModel):
     collaborators: Optional[List[Collaborator]] = None
     version: Optional[str] = "1.0"
     gameType: GameType
-    sessionID: str
+    sessionID: str = ""  # empty: the drawing is saved into the active session
     lines: List[Line]
     trackedBehaviors: Optional[List[TrackedBehavior]] = None
     placedModels: Optional[List[PlacedModel]] = None
@@ -200,8 +200,10 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
 
     cursor = db.cursor()
 
-    # 1. Check if the Session is closed and fetch missing metadata
-    cursor.execute("SELECT EndDate, ShowBoy, ShowGirl FROM Sessions WHERE ID = ?", (message.sessionID,))
+    # 1. Check if the Session is closed and fetch missing metadata. Without a session the active one is used,
+    #    so saving a drawing is always possible.
+    session_id = message.sessionID or get_active_session_id(db)
+    cursor.execute("SELECT EndDate, ShowBoy, ShowGirl FROM Sessions WHERE ID = ?", (session_id,))
     session_row = cursor.fetchone()
 
     if session_row is None:
@@ -225,7 +227,7 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
         version=message.version,
         date=get_date(),
         gameType=message.gameType,
-        sessionID=message.sessionID,
+        sessionID=session_id,
         showBoy=show_boy,
         showGirl=show_girl,
         sadChildCoordinates=None,
