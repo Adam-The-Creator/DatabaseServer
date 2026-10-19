@@ -79,4 +79,6 @@ if __name__ == "__main__":
     print(f"🚀 Start the server: http://{args.host}:{args.port}")
     print(f"🔎 Test: http://{args.host}:{args.port}/docs")
 
-    uvicorn.run("server:app", host=args.host, port=args.port, reload=False)
+    # The app object (not the "server:app" import string) is passed so that this also works when the server is
+    # packaged into an exe (PyInstaller), where the script is not importable as the module "server".
+    uvicorn.run(app, host=args.host, port=args.port, reload=False)
