@@ -10,6 +10,7 @@ import config
 import database
 import security
 from routers import drawings, players, auth, sessions, rooms
+from routers import analysis as analysis_api  # aliased: "analysis" is also the name of the package it uses
 
 
 @asynccontextmanager
@@ -67,6 +68,7 @@ app.include_router(players.router)
 app.include_router(drawings.router)
 app.include_router(sessions.router)
 app.include_router(rooms.router)
+app.include_router(analysis_api.router)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start VR Drawing 3D Database server")

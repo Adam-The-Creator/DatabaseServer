@@ -13,6 +13,10 @@ SQLITE_DB_NAME = SQLITE_DB_PATH.split("/")[-1]
 
 PERSISTENT_DATA_PATH = ""
 
+# Folder of the analysis file store: stored reports, thumbnails and analysis results (see analysis/store.py).
+# The environment variable ANALYSIS_STORE_PATH overrides it. Relative paths are relative to the working directory.
+ANALYSIS_STORE_PATH = "analysis_store"
+
 # Database server configuration
 HOST = "127.0.0.1"
 PORT = 8000
