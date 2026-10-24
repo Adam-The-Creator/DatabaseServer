@@ -1,10 +1,12 @@
 import hmac
+import math
 import sqlite3
 import uuid
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
+import throttle
 from database import get_db, execute_with_retry
-from security import create_access_token
+from security import Role, create_access_token
 from utils import get_date, encrypt, generate_salt
 
 # Create the router instance
@@ -40,6 +42,10 @@ def sign_up(sign_up_data: SignUpMessage, db: sqlite3.Connection = Depends(get_db
 
     if not sign_up_data.username or not sign_up_data.password:
         raise HTTPException(status_code=400, detail="Sign up message is invalid.")
+
+    # Only these two roles can be registered. The admin account is created on the server (requirement ADM-03).
+    if sign_up_data.role not in (Role.PLAYER, Role.PSYCHOLOGIST):
+        raise HTTPException(status_code=400, detail="Only the Player and Psychologist roles can be registered.")
 
     cursor = db.cursor()
 
@@ -87,12 +93,29 @@ def sign_up(sign_up_data: SignUpMessage, db: sqlite3.Connection = Depends(get_db
         raise HTTPException(status_code=500, detail=f"Database transaction failed: {str(e)}")
 
 
+def _wrong_credentials(username: str, ip: str) -> HTTPException:
+    """The answer for an unknown user and for a wrong password alike, so usernames cannot be enumerated."""
+
+    throttle.login_guard.failure(username, ip)
+    return HTTPException(status_code=401, detail="Invalid username or password.")
+
+
 @router.post("/login", summary="Authenticate a player")
-def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
+def login(login_data: LoginMessage, request: Request, db: sqlite3.Connection = Depends(get_db)):
     """Login"""
 
     if not login_data.username or not login_data.password:
         raise HTTPException(status_code=400, detail="Login message is invalid.")
+
+    # Repeated failures for the same username from the same address are blocked for a while (requirement SEC-03)
+    ip = throttle.client_ip(request.scope)
+    blocked = throttle.login_guard.blocked_for(login_data.username, ip)
+    if blocked:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed logins. Try again in {throttle.human_wait(blocked)}.",
+            headers={"Retry-After": str(math.ceil(blocked))},
+        )
 
     cursor = db.cursor()
 
@@ -100,9 +123,8 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
     cursor.execute("SELECT ID, PasswordID, Role FROM Players WHERE Username = ?", (login_data.username,))
     user_row = cursor.fetchone()
 
-    # Same message for an unknown user and a wrong password, so usernames cannot be enumerated.
     if not user_row:
-        raise HTTPException(status_code=401, detail="Invalid username or password.")
+        raise _wrong_credentials(login_data.username, ip)
 
     player_id, password_data_id, role = user_row[0], user_row[1], user_row[2]
 
@@ -118,6 +140,8 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
     # 3. Validate Password Hash (constant-time comparison)
     expected_hash = encrypt(login_data.password + salt)
     if hmac.compare_digest((stored_password_hash or "").encode("utf-8"), expected_hash.encode("utf-8")):
+        throttle.login_guard.success(login_data.username, ip)
+
         # 4. Success! Update the SignedIn timestamp
         current_time = get_date()
         try:
@@ -140,4 +164,4 @@ def login(login_data: LoginMessage, db: sqlite3.Connection = Depends(get_db)):
             "expiresIn": expires_in,
         }
     else:
-        raise HTTPException(status_code=401, detail="Invalid username or password.")
+        raise _wrong_credentials(login_data.username, ip)

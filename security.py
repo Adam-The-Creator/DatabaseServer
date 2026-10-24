@@ -1,3 +1,4 @@
+import math
 import os
 import secrets
 from dataclasses import dataclass
@@ -6,10 +7,11 @@ from enum import IntEnum
 from typing import Optional
 
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import config
+import throttle
 
 
 class Role(IntEnum):
@@ -18,6 +20,9 @@ class Role(IntEnum):
     NONE = -1
     PLAYER = 0
     PSYCHOLOGIST = 1
+    # The admin of the web app (requirement ADM-01). Nobody can register as admin: the account is created on the
+    # server (create_admin.py) and /auth/signup rejects this value. The game's Role.cs does not know it.
+    ADMIN = 2
 
 
 # --- Signing secret ---
@@ -57,6 +62,10 @@ class CurrentPlayer:
     def is_psychologist(self) -> bool:
         return self.role == Role.PSYCHOLOGIST
 
+    @property
+    def is_admin(self) -> bool:
+        return self.role == Role.ADMIN
+
 
 def create_access_token(player_id: str, role: Optional[int]) -> tuple[str, int]:
     """Creates a signed token for the player. Returns (token, expires_in_seconds)."""
@@ -82,10 +91,21 @@ def _unauthorized(detail: str) -> HTTPException:
     return HTTPException(status_code=401, detail=detail, headers={"WWW-Authenticate": "Bearer"})
 
 
+def _admin_may_open(path: str, admin_id: str) -> bool:
+    """An admin token opens the admin endpoints and the admin's own role and info (needed at login), nothing else."""
+
+    return (path == "/admin" or path.startswith("/admin/")
+            or path in (f"/players/{admin_id}/role", f"/players/{admin_id}/info"))
+
+
 def get_current_player(
+        request: Request,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ) -> CurrentPlayer:
-    """Requires a valid, unexpired bearer token. Raises 401 otherwise."""
+    """
+    Requires a valid, unexpired bearer token. Raises 401 otherwise. Also applies the per-account request limit
+    (429) and keeps an admin token away from everything but the admin endpoints (403, least privilege, ACC-03).
+    """
 
     if credentials is None:
         raise _unauthorized("Not authenticated.")
@@ -102,7 +122,23 @@ def get_current_player(
     except jwt.InvalidTokenError:
         raise _unauthorized("Invalid token.")
 
-    return CurrentPlayer(id=claims["sub"], role=int(claims.get("role", Role.NONE)))
+    current = CurrentPlayer(id=claims["sub"], role=int(claims.get("role", Role.NONE)))
+
+    wait = throttle.account_limiter.take(current.id)
+    if wait:
+        raise HTTPException(status_code=429, detail=f"Too many requests. Try again in {throttle.human_wait(wait)}.",
+                            headers={"Retry-After": str(math.ceil(wait))})
+    if current.is_admin and not _admin_may_open(request.url.path, current.id):
+        raise HTTPException(status_code=403, detail="Admin accounts can only use the admin endpoints.")
+    return current
+
+
+def require_admin(current: CurrentPlayer = Depends(get_current_player)) -> CurrentPlayer:
+    """Requires the Admin role. Raises 403 otherwise."""
+
+    if not current.is_admin:
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return current
 
 
 def require_psychologist(current: CurrentPlayer = Depends(get_current_player)) -> CurrentPlayer:

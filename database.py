@@ -249,6 +249,11 @@ def initialize_sqlite_tables(cursor: sqlite3.Cursor) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_activerooms_drawingid ON ActiveRooms(DrawingID);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_activerooms_hostid ON ActiveRooms(HostID);")
 
+    # 9. The tables of the feedback module (questionnaires and messages of the web app, requirement SC-08).
+    # Imported here, not at the top, so that this module does not pull in the authentication that module uses.
+    from feedback import store as feedback_store
+    feedback_store.ensure_schema(cursor)
+
 
 def ensure_default_session(db: sqlite3.Connection) -> str:
     """

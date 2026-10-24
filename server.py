@@ -1,4 +1,7 @@
 import argparse
+import getpass
+import os
+import sys
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -6,11 +9,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo.errors import ServerSelectionTimeoutError
 
+import admin_account
 import config
 import database
 import security
 from routers import drawings, players, auth, sessions, rooms
+from routers import admin as admin_api
 from routers import analysis as analysis_api  # aliased: "analysis" is also the name of the package it uses
+from routers import feedback as feedback_api
+from throttle import ProtectionMiddleware
 
 
 @asynccontextmanager
@@ -53,6 +60,11 @@ def health_check():
     """Basic root endpoint to verify the server is online."""
     return {"status": "online", "message": "VR Drawing Database Server is running"}
 
+# Throttling per client address, request size cap and security headers (requirements SEC-02, SEC-04, SEC-09). Added
+# before the CORS middleware, which is then outside of it: a refused request still gets the CORS headers, otherwise the
+# browser would show a CORS error instead of the reason.
+app.add_middleware(ProtectionMiddleware)
+
 # --- Add CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
@@ -69,14 +81,48 @@ app.include_router(drawings.router)
 app.include_router(sessions.router)
 app.include_router(rooms.router)
 app.include_router(analysis_api.router)
+app.include_router(feedback_api.router)
+app.include_router(admin_api.router)
+
+
+def create_admin_account(username: str) -> int:
+    """
+    `--create-admin NAME`: creates the admin account of the web app (or sets a new password for it) and exits. The
+    password comes from the environment variable named in config.py, or is asked for. It is never printed or stored.
+    """
+
+    password = os.environ.get(config.ADMIN_PASSWORD_ENV_VAR)
+    if not password:
+        password = getpass.getpass(f"Password for the admin '{username}': ")
+        if getpass.getpass("Password again: ") != password:
+            print("The two passwords are not the same.")
+            return 1
+
+    database.verify_sqlite_schema()  # the tables exist, even on a server that has never been started
+    conn = database.get_sqlite_connection()
+    try:
+        outcome = admin_account.create_admin(conn, username, password)
+    except admin_account.AdminAccountError as error:
+        print(f"Not done: {error}")
+        return 1
+    finally:
+        conn.close()
+    print(f"The admin account '{username}' was {outcome}.")
+    return 0
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start VR Drawing 3D Database server")
     parser.add_argument("--host", type=str, default=config.HOST, help="IP address of the host server")
     parser.add_argument("--port", type=int, default=config.PORT, help="Port of the host server")
     parser.add_argument("--persistentDataPath", type=str, default=config.PERSISTENT_DATA_PATH, help="Persistent Data Path of the game")
+    parser.add_argument("--create-admin", metavar="USERNAME", default=None,
+                        help="Create the admin account of the web app (or set a new password for it), then exit")
 
     args = parser.parse_args()
+
+    if args.create_admin is not None:
+        sys.exit(create_admin_account(args.create_admin))
 
     print(f"🚀 Start the server: http://{args.host}:{args.port}")
     print(f"🔎 Test: http://{args.host}:{args.port}/docs")

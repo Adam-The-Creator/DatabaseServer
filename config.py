@@ -31,6 +31,50 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 12
 
 
+# --- Request protection (requirements SEC-02, SEC-03, SEC-04) ---
+# Every limit below is a token bucket: it holds up to CAPACITY requests, and gets REFILL_PER_SECOND back every second.
+# Normal use of the game and of the web app stays far below them.
+THROTTLE_IP_CAPACITY = 300
+THROTTLE_IP_REFILL_PER_SECOND = 20
+THROTTLE_ACCOUNT_CAPACITY = 300
+THROTTLE_ACCOUNT_REFILL_PER_SECOND = 20
+# Login and sign-up only (on top of the limits above). Generous, because a whole group may sit behind one address.
+THROTTLE_AUTH_CAPACITY = 60
+THROTTLE_AUTH_REFILL_PER_SECOND = 1
+
+# Repeated failed logins for the same username from the same address are blocked for a while.
+LOGIN_MAX_FAILURES = 5
+LOGIN_BLOCK_SECONDS = 15 * 60
+
+# Request bodies bigger than this are refused (413) before they are read.
+AUTH_MAX_BODY_BYTES = 4 * 1024
+FEEDBACK_MAX_BODY_BYTES = 16 * 1024
+
+# Addresses of reverse proxies / tunnels (ngrok runs on this PC) whose X-Forwarded-For header is believed. For anything
+# else the header is ignored, otherwise a client could invent its own address to get round the limits.
+TRUSTED_PROXIES = ["127.0.0.1", "::1"]
+
+
+# --- Feedback and questionnaires (requirements FBK-*, SEC-01, SEC-08) ---
+# A questionnaire (same instrument and target) can be sent again after this long.
+FEEDBACK_QUESTIONNAIRE_INTERVAL_SECONDS = 60 * 60
+# Messages: at least this long between two, and at most this many in 24 hours.
+FEEDBACK_MESSAGE_INTERVAL_SECONDS = 60
+FEEDBACK_MESSAGES_PER_DAY = 20
+# How many submissions one account can have stored.
+FEEDBACK_MAX_MESSAGES_PER_ACCOUNT = 500
+FEEDBACK_MAX_QUESTIONNAIRES_PER_ACCOUNT = 200
+FEEDBACK_MESSAGE_MAX_CHARS = 2000
+FEEDBACK_PAGE_SIZE_MAX = 100
+# Results of fewer submissions than this are not shown ("not enough data"), which also protects anonymity.
+FEEDBACK_MIN_GROUP_SIZE = 3
+
+# Minimum length of the password of the admin account (see server.py --create-admin). The command reads the password
+# from the environment variable below when it is set (nothing is stored here), otherwise it asks for it.
+ADMIN_MIN_PASSWORD_LENGTH = 10
+ADMIN_PASSWORD_ENV_VAR = "ADMIN_PASSWORD"
+
+
 # --- CORS Configuration ---
 # List of origins (frontend URLs) allowed to communicate with this API.
 # Use ["*"] to allow any origin (only for local testing, NEVER for production).

@@ -15,7 +15,7 @@ from analysis.geometry import drawing_svg
 from analysis.narrative import render_sentence
 
 # Bump when the layout or the wording of a report changes: stored reports of other versions count as out of date.
-TEMPLATE_VERSION = "1"
+TEMPLATE_VERSION = "2"  # 2: the drawing report names the description of its session
 
 DISCLAIMER = "The numbers describe the drawing. They support the psychologist's judgement and are not a diagnosis."
 
@@ -161,6 +161,7 @@ def drawing_report(
         ("Gender", player.get("gender") or "None"),
         ("Dominant hand", player.get("dominantHand") or "None"),
         ("Session", (session or {}).get("name") or metadata.get("sessionID")),
+        ("Session description", (session or {}).get("description") or "None"),
         ("Game type", catalog.game_type_name(metadata.get("gameType", -1))),
         ("Date", metadata.get("date")),
         ("Strokes", f"{len(drawn_lines(doc))} drawn, {len(all_lines(doc)) - len(drawn_lines(doc))} erased"),

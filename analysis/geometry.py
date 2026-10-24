@@ -4,11 +4,13 @@ thumbnails and reports (SES-02, PLY-01, REP-02).
 """
 
 import math
-from typing import Any
+from typing import Any, Optional
 
 from analysis.common import (
-    Drawing, TimeAxis, all_lines, line_stats, number, point_time, rgb_to_hex, stroke_times, time_base,
+    Drawing, TimeAxis, all_lines, history_time, legacy_offset_ms, line_stats, number, point_time, rgb_to_hex,
+    stroke_times, time_base,
 )
+from analysis.timeline import HISTORY_ERASE, HISTORY_UNDO
 
 
 def _distance_to_segment(p: tuple, a: tuple, b: tuple) -> float:
@@ -41,14 +43,33 @@ def simplify_indices(points: list[tuple], tolerance: float) -> list[int]:
     return sorted(keep)
 
 
+def erased_at(line: dict, axis: TimeAxis, offset: Optional[int]) -> Optional[int]:
+    """
+    When an erased stroke was erased, on the time axis: the last erase or undo in its history (which only has the legacy
+    stamp, so the offset puts it on the same axis as the points). None when the history has none, then the replay lets
+    the stroke disappear as soon as it is finished.
+    """
+
+    stamps = [
+        history_time(event.get("timestamp"), offset)
+        for event in line.get("history") or []
+        if event.get("eventType") in (HISTORY_ERASE, HISTORY_UNDO)
+    ]
+    stamps = [stamp for stamp in stamps if stamp is not None]
+    return axis.map(max(stamps)) if stamps else None
+
+
 def stroke_geometry(doc: Drawing, tolerance: float = 0.0) -> dict[str, Any]:
     """
     The drawing as the viewer needs it: strokes with simplified points [x, y, z, t] (t in ms on the time axis of the
     drawing, or null without time data), the placed models and the few metadata fields. tolerance 0 keeps every point.
+    An erased stroke also says when it was erased (erasedAtMs), so the replay can show it from when it was drawn until
+    when it was erased. The duration of the replay includes the last erasing.
     """
 
     metadata = doc.get("metadata") or {}
     axis = TimeAxis(doc)
+    offset = legacy_offset_ms(doc)
     strokes = []
     original = returned = 0
     duration = 0
@@ -63,15 +84,24 @@ def stroke_geometry(doc: Drawing, tolerance: float = 0.0) -> dict[str, Any]:
                          None if t is None else axis.map(t)])
         stats = line_stats(line)
         times = stroke_times(line)
+        erased = line.get("status") != 1
+        erased_ms = None
         if times:
-            duration = max(duration, axis.map(times[1]))
+            end = axis.map(times[1])
+            duration = max(duration, end)
+            if erased:
+                erased_ms = erased_at(line, axis, offset)
+                if erased_ms is not None:
+                    erased_ms = max(erased_ms, end)  # a stroke cannot be erased before it is finished
+                    duration = max(duration, erased_ms)
         original += len(points)
         returned += len(rows)
         strokes.append({
             "id": line.get("id"),
             "authorId": line.get("userID"),
             "hand": line.get("hand"),
-            "erased": line.get("status") != 1,
+            "erased": erased,
+            "erasedAtMs": erased_ms,
             "width": number((line.get("startWidth", 0.005) + line.get("endWidth", 0.005)) / 2, 5),
             "startColor": {k: (line.get("startColor") or {}).get(k, 0) for k in ("r", "g", "b")},
             "endColor": {k: (line.get("endColor") or line.get("startColor") or {}).get(k, 0) for k in ("r", "g", "b")},
