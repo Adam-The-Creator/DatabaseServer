@@ -63,15 +63,18 @@ read too. All IDs in paths are validated (`[A-Za-z0-9_-]`, up to 64 characters).
 - **Old drawings.** Schema version 1 drawings (no UTC times, pressure, events or stored line stats) work. A metric that
   cannot be computed has no value and a reason, never a made-up number.
 - **Reports and staleness.** A report remembers a *content fingerprint* of what it was made from (computed by MongoDB
-  from a projection, so the document is not transferred). While the fingerprint, the analyzer version and the report
-  template version are unchanged, the stored report is reused. Otherwise it is listed as out of date.
+  from a projection, so the document is not transferred). While the fingerprint, the analyzer version, the report
+  template version and the state of the AI results (`aiSignature`: which AI functions are on and when the stored heavy
+  results were made) are unchanged, the stored report is reused. Otherwise it is listed as out of date. The AI sections of
+  a calculated kind (indicators, comparison) reflect the other drawings at the time of the report: regenerate to refresh.
 - **Rounding.** Numbers round half up, like the web app. Python's `round()` rounds half to even, which made the same
   number read differently in a report and on screen.
 - **The store.** `analysis_store/` next to the working directory, or the folder in `ANALYSIS_STORE_PATH`
   (environment variable, or `config.py`). It is ignored by git.
 - **Not done:** background jobs (report generation takes well under a second at the current data size) and server side
   pagination of the lists.
-- **No new dependency.** The calculations use the standard library only.
+- **No new dependency.** The calculations use the standard library only. (The AI module in `ai/`, which builds on these
+  results, uses numpy and scikit-learn. Reports ask it for their AI sections and are made without them if it fails.)
 
 ## Tests
 

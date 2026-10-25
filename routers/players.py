@@ -1,8 +1,8 @@
 import sqlite3
-from typing import List, Optional
+from typing import Annotated, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Body, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import AfterValidator, BaseModel, Field
 
 import database
 from database import get_db, execute_with_retry
@@ -21,11 +21,42 @@ router = APIRouter(
 
 # --- DTOs ---
 
+def _without_control_characters(value: str) -> str:
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("must not contain control characters")
+    return value
+
+
+# What a player's info may hold. The game's own dropdowns offer exactly these values (LobbyManager.cs); an empty
+# string means "not set". The age is a whole number of years, 0 meaning "not given".
+PlayerName = Annotated[str, Field(max_length=100), AfterValidator(_without_control_characters)]
+PlayerGender = Literal["", "Male", "Female", "Other"]
+PlayerHand = Literal["", "Left", "Right", "Both"]
+PlayerAge = Annotated[int, Field(ge=0, le=150)]
+
+
 class PlayerInfoUpdateMessage(BaseModel):
-    name: Optional[str] = None
-    gender: Optional[str] = None
-    age: Optional[int] = None
-    dominantHand: Optional[str] = None
+    name: Optional[PlayerName] = None
+    gender: Optional[PlayerGender] = None
+    age: Optional[PlayerAge] = None
+    dominantHand: Optional[PlayerHand] = None
+
+
+# The bodies of the single field updates: the same JSON as before ({"name": ...}), now with the same limits
+class NameUpdate(BaseModel):
+    name: PlayerName
+
+
+class GenderUpdate(BaseModel):
+    gender: PlayerGender
+
+
+class AgeUpdate(BaseModel):
+    age: PlayerAge
+
+
+class DominantHandUpdate(BaseModel):
+    dominant_hand: PlayerHand
 
 
 # --- API Endpoints ---
@@ -226,14 +257,14 @@ def get_player_ids(db: sqlite3.Connection = Depends(get_db)) -> List[str]:
 
 
 @router.put("/{user_id}/name", summary="Update name of player", dependencies=[Depends(self_only)])
-def update_player_name(user_id: str, name: str = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
+def update_player_name(user_id: str, body: NameUpdate, db: sqlite3.Connection = Depends(get_db)):
     """Update name of player (in SQLite)"""
 
     cursor = db.cursor()
     execute_with_retry(
         cursor,
         "UPDATE PlayerInfo SET Name = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
-        (name, user_id)
+        (body.name, user_id)
     )
     if cursor.rowcount == 0:
         db.rollback()
@@ -243,14 +274,14 @@ def update_player_name(user_id: str, name: str = Body(..., embed=True), db: sqli
 
 
 @router.put("/{user_id}/gender", summary="Update gender of player", dependencies=[Depends(self_only)])
-def update_player_gender(user_id: str, gender: str = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
+def update_player_gender(user_id: str, body: GenderUpdate, db: sqlite3.Connection = Depends(get_db)):
     """Update gender of player (in SQLite)"""
 
     cursor = db.cursor()
     execute_with_retry(
         cursor,
         "UPDATE PlayerInfo SET Gender = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
-        (gender, user_id)
+        (body.gender, user_id)
     )
     if cursor.rowcount == 0:
         db.rollback()
@@ -260,14 +291,14 @@ def update_player_gender(user_id: str, gender: str = Body(..., embed=True), db: 
 
 
 @router.put("/{user_id}/age", summary="Update age of player", dependencies=[Depends(self_only)])
-def update_player_age(user_id: str, age: int = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
+def update_player_age(user_id: str, body: AgeUpdate, db: sqlite3.Connection = Depends(get_db)):
     """Update age of player (in SQLite)"""
 
     cursor = db.cursor()
     execute_with_retry(
         cursor,
         "UPDATE PlayerInfo SET Age = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
-        (age, user_id)
+        (body.age, user_id)
     )
     if cursor.rowcount == 0:
         db.rollback()
@@ -277,14 +308,14 @@ def update_player_age(user_id: str, age: int = Body(..., embed=True), db: sqlite
 
 
 @router.put("/{user_id}/dominant-hand", summary="Update dominant hand of player", dependencies=[Depends(self_only)])
-def update_player_dominant_hand(user_id: str, dominant_hand: str = Body(..., embed=True), db: sqlite3.Connection = Depends(get_db)):
+def update_player_dominant_hand(user_id: str, body: DominantHandUpdate, db: sqlite3.Connection = Depends(get_db)):
     """Update dominant hand of player (in SQLite)"""
 
     cursor = db.cursor()
     execute_with_retry(
         cursor,
         "UPDATE PlayerInfo SET DominantHand = ? WHERE ID = (SELECT PlayerInfoID FROM Players WHERE ID = ?)",
-        (dominant_hand, user_id)
+        (body.dominant_hand, user_id)
     )
     if cursor.rowcount == 0:
         db.rollback()

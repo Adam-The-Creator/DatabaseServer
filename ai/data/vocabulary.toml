@@ -1,0 +1,145 @@
+# The vocabulary of the zero-shot labelling (requirement AI-12): what a CLIP-like image-text model is asked to choose
+# between. It can be edited. A word that is not here can never be an answer, and the model always has to pick the
+# best fitting entries, so the "other" entries below give it a way to say "nothing recognisable".
+#
+# Every label has an id (stored with the result), a name (shown) and one or more phrases. Each phrase is put into every
+# template, and the model's answers for them are averaged. Change the version when you change the list or the
+# templates: stored results of another version are shown as out of date.
+
+version = "1"
+name = "Default vocabulary"
+
+templates = [
+  "a simple drawing of {}",
+  "a line sketch of {}",
+  "a child's drawing of {}",
+]
+
+[[label]]
+id = "person"
+name = "person"
+phrases = ["a person", "a human figure", "a stick figure"]
+
+[[label]]
+id = "face"
+name = "face"
+phrases = ["a face", "a smiley face"]
+
+[[label]]
+id = "animal"
+name = "animal"
+phrases = ["an animal", "a dog", "a cat"]
+
+[[label]]
+id = "bird"
+name = "bird"
+phrases = ["a bird", "a bird with wings"]
+
+[[label]]
+id = "fish"
+name = "fish"
+phrases = ["a fish", "a fish in the water"]
+
+[[label]]
+id = "house"
+name = "house"
+phrases = ["a house", "a building with a roof"]
+
+[[label]]
+id = "tree"
+name = "tree"
+phrases = ["a tree", "a tree with leaves"]
+
+[[label]]
+id = "flower"
+name = "flower"
+phrases = ["a flower", "a flower with petals"]
+
+[[label]]
+id = "sun"
+name = "sun"
+phrases = ["the sun", "a sun with rays"]
+
+[[label]]
+id = "moon"
+name = "moon or star"
+phrases = ["the moon", "a star", "the night sky"]
+
+[[label]]
+id = "cloud"
+name = "cloud or rain"
+phrases = ["a cloud", "rain falling"]
+
+[[label]]
+id = "water"
+name = "water"
+phrases = ["water waves", "the sea", "a river"]
+
+[[label]]
+id = "mountain"
+name = "mountain"
+phrases = ["a mountain", "hills"]
+
+[[label]]
+id = "heart"
+name = "heart"
+phrases = ["a heart", "a love heart"]
+
+[[label]]
+id = "rainbow"
+name = "rainbow"
+phrases = ["a rainbow", "colourful arcs"]
+
+[[label]]
+id = "boat"
+name = "boat"
+phrases = ["a boat", "a ship on the water"]
+
+[[label]]
+id = "vehicle"
+name = "vehicle"
+phrases = ["a car", "a vehicle with wheels"]
+
+[[label]]
+id = "path"
+name = "path or fence"
+phrases = ["a path", "a road", "a fence"]
+
+[[label]]
+id = "fire"
+name = "fire"
+phrases = ["a fire", "flames"]
+
+[[label]]
+id = "door"
+name = "door or window"
+phrases = ["a door", "a window"]
+
+[[label]]
+id = "furniture"
+name = "furniture"
+phrases = ["a table", "a chair", "a bed"]
+
+[[label]]
+id = "toy"
+name = "toy or ball"
+phrases = ["a ball", "a toy", "a balloon"]
+
+# The "other" entries: what the model says when nothing in the list fits
+[[label]]
+id = "scribble"
+name = "scribble"
+kind = "other"
+phrases = ["random scribbles", "tangled lines", "a messy scribble"]
+
+[[label]]
+id = "pattern"
+name = "pattern"
+kind = "other"
+phrases = ["an abstract pattern", "repeating shapes", "geometric lines"]
+
+[[label]]
+id = "blank"
+name = "almost empty"
+kind = "other"
+phrases = ["an almost empty picture", "a single line"]

@@ -1,6 +1,9 @@
 # The analysis file store (stored reports, thumbnails and analysis results) is generated data
 analysis_store/
 
+ai/INSTALL_MODELS.md
+ai/EVALUATION.md
+
 # Python caches. Files that are already tracked stay tracked, only new ones are ignored.
 __pycache__/
 *.pyc

@@ -148,7 +148,7 @@ def format_number(value: float, decimals: int) -> str:
 
 def format_metric(metric_id: str, value: Optional[float]) -> str:
     if value is None:
-        return "–"
+        return "-"
     definition = _BY_ID[metric_id]
     if definition["unit"] == "s":
         return format_duration(value)

@@ -11,10 +11,12 @@ from pymongo.errors import ServerSelectionTimeoutError
 
 import admin_account
 import config
+from ai import jobs as ai_jobs
 import database
 import security
 from routers import drawings, players, auth, sessions, rooms
 from routers import admin as admin_api
+from routers import ai as ai_api
 from routers import analysis as analysis_api  # aliased: "analysis" is also the name of the package it uses
 from routers import feedback as feedback_api
 from throttle import ProtectionMiddleware
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
     yield  # <-- the app serves requests while suspended here
 
     # --- Shutdown ---
+    ai_jobs.manager.shutdown()  # running AI jobs are asked to stop, so the server does not wait for a model
     database.close_mongo()
     print("🛑 MongoDB connection closed. Server shutting down.")
 
@@ -81,6 +84,7 @@ app.include_router(drawings.router)
 app.include_router(sessions.router)
 app.include_router(rooms.router)
 app.include_router(analysis_api.router)
+app.include_router(ai_api.router)
 app.include_router(feedback_api.router)
 app.include_router(admin_api.router)
 

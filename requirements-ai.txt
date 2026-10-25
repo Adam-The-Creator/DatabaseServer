@@ -1,0 +1,12 @@
+# Optional libraries of the model based AI functions (semantic labelling with CLIP, AI-12).
+#
+# They are NOT in requirements.txt: they are big (about 1.5 GB with their dependencies) and the packaged server
+# (Tools\Build-Release.ps1 reads requirements.txt) does not carry them. Install them into the venv the server runs in:
+#
+#     .\.venv\Scripts\python.exe -m pip install -r requirements-ai.txt
+#
+# CPU only is enough for the ViT-B-32 model. For an NVIDIA GPU see ai\INSTALL_MODELS.md.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1
+torchvision==0.29.1
+open_clip_torch==3.3.0

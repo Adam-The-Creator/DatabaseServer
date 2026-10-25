@@ -1,0 +1,271 @@
+# The rule base of the fuzzy logic indicators (requirement AI-14).
+#
+# This file is meant to be read and edited by psychologists. It is read again on every request, so a change takes
+# effect without a restart. A file with an error is not used: the indicators then say what is wrong with it.
+#
+# How it works, in short
+#   1. Every metric is turned into the three linguistic values "low", "medium" and "high" (each with a membership
+#      degree from 0 to 1). The break points are the 10th, 50th and 90th percentile of the metric in the comparison
+#      group (the cohort). When the group has fewer than AI_MIN_FUZZY_COHORT drawings, the fixed ranges below are used.
+#   2. Every rule says "if <conditions> then the indicator is <level>". "and" takes the smaller degree, "or" the
+#      larger one, "not" is 1 minus the degree. A rule can have a weight below 1 when it is only a weak hint.
+#   3. The degree of a level is the strongest rule that points to it. The level with the highest degree is shown,
+#      together with the rules that fired and the values they used.
+#
+# The words describe how a drawing compares with the others on a measurement. They are NOT a diagnosis and say nothing
+# about the participant's state. Every rule needs a rationale, so a reader can judge whether the rule makes sense.
+#
+# Change the version when you change the meaning of a rule: stored reports then show the new version.
+
+version = "1"
+name = "Starter rule base"
+# "proposal" = written by the developer, not yet reviewed by psychologists. Change it to "reviewed" after the review
+# (and say who and when in the field below), because the web app shows this status next to every indicator.
+status = "proposal"
+reviewed = ""
+description = "Descriptive indicators of how a drawing compares with the others on the measured quantities."
+
+# Fixed ranges, used when the comparison group is too small: [low until, medium at, high from].
+# Below the first number the metric is fully "low", at the middle number fully "medium", above the last fully "high".
+[fallbackRanges]
+strokesDrawn = [2, 8, 30]
+totalLength = [0.5, 3, 15]
+meanStrokeLength = [0.1, 0.4, 1.0]
+boundingVolume = [0.02, 0.4, 3.0]
+heightRange = [0.1, 0.4, 1.2]
+meanSpeed = [0.1, 0.35, 0.8]
+idleTime = [0, 20, 120]
+eraseRatio = [0, 8, 30]
+distinctColours = [1, 2, 5]
+warmShare = [20, 55, 85]
+directionalChange = [0.05, 0.12, 0.2]
+
+# ---------------------------------------------------------------------------------------------------------------------
+
+[[indicator]]
+id = "amountDrawn"
+name = "Amount drawn"
+rationale = "How much was drawn compared with the others: the number of strokes and the total length of the lines."
+[indicator.levels]
+low = "little was drawn"
+medium = "a typical amount was drawn"
+high = "a lot was drawn"
+[[indicator.rule]]
+id = "amount-high"
+if = "strokesDrawn is high and totalLength is high"
+then = "high"
+rationale = "Many strokes and long lines both point to a large drawing."
+[[indicator.rule]]
+id = "amount-high-weak"
+if = "strokesDrawn is high or totalLength is high"
+then = "high"
+weight = 0.6
+rationale = "One of the two measures alone is a weaker hint, for example a few very long lines."
+[[indicator.rule]]
+id = "amount-medium"
+if = "strokesDrawn is medium or totalLength is medium"
+then = "medium"
+rationale = "Either measure in the middle of the group means a typical amount."
+[[indicator.rule]]
+id = "amount-low"
+if = "strokesDrawn is low and totalLength is low"
+then = "low"
+rationale = "Few strokes and short lines both point to a small drawing."
+[[indicator.rule]]
+id = "amount-low-weak"
+if = "strokesDrawn is low or totalLength is low"
+then = "low"
+weight = 0.6
+rationale = "One of the two measures alone is a weaker hint."
+
+[[indicator]]
+id = "spaceUse"
+name = "Use of space"
+rationale = "How much room the drawing takes: the volume of its bounding box and its height range."
+[indicator.levels]
+low = "compact use of space"
+medium = "a typical use of space"
+high = "expansive use of space"
+[[indicator.rule]]
+id = "space-high"
+if = "boundingVolume is high and heightRange is high"
+then = "high"
+rationale = "A large box and a large height range both mean the drawing reaches far."
+[[indicator.rule]]
+id = "space-high-weak"
+if = "boundingVolume is high or heightRange is high"
+then = "high"
+weight = 0.6
+rationale = "One stray stroke can enlarge the box, so one measure alone is only a weak hint."
+[[indicator.rule]]
+id = "space-medium"
+if = "boundingVolume is medium or heightRange is medium"
+then = "medium"
+rationale = "Either measure in the middle of the group means a typical use of space."
+[[indicator.rule]]
+id = "space-low"
+if = "boundingVolume is low and heightRange is low"
+then = "low"
+rationale = "A small box and a small height range both mean the drawing stays close together."
+[[indicator.rule]]
+id = "space-low-weak"
+if = "boundingVolume is low or heightRange is low"
+then = "low"
+weight = 0.6
+rationale = "One measure alone is a weaker hint. Depends also on how far the participant can reach."
+
+[[indicator]]
+id = "pace"
+name = "Drawing pace"
+rationale = "How fast the lines were drawn, from the mean drawing speed."
+[indicator.levels]
+low = "slow drawing"
+medium = "a typical pace"
+high = "fast drawing"
+[[indicator.rule]]
+id = "pace-high"
+if = "meanSpeed is high"
+then = "high"
+rationale = "A high mean speed compared with the others is a fast pace."
+[[indicator.rule]]
+id = "pace-medium"
+if = "meanSpeed is medium"
+then = "medium"
+rationale = "A mean speed in the middle of the group is a typical pace."
+[[indicator.rule]]
+id = "pace-low"
+if = "meanSpeed is low"
+then = "low"
+rationale = "A low mean speed compared with the others is a slow pace. It can be careful or hesitant."
+
+[[indicator]]
+id = "pauses"
+name = "Pauses"
+rationale = "How much time passed between the strokes (pauses of more than 5 seconds)."
+[indicator.levels]
+low = "few or short pauses"
+medium = "a typical amount of pauses"
+high = "long or many pauses"
+[[indicator.rule]]
+id = "pauses-high"
+if = "idleTime is high"
+then = "high"
+rationale = "A lot of time between strokes compared with the others. The data cannot say what the participant did."
+[[indicator.rule]]
+id = "pauses-medium"
+if = "idleTime is medium"
+then = "medium"
+rationale = "A pause time in the middle of the group."
+[[indicator.rule]]
+id = "pauses-low"
+if = "idleTime is low"
+then = "low"
+rationale = "Little time between the strokes compared with the others."
+
+[[indicator]]
+id = "selfCorrection"
+name = "Self-correction"
+rationale = "How many of the strokes were erased again."
+[indicator.levels]
+low = "little erasing"
+medium = "a typical amount of erasing"
+high = "a lot of erasing"
+[[indicator.rule]]
+id = "correction-high"
+if = "eraseRatio is high"
+then = "high"
+rationale = "A large share of erased strokes compared with the others. It can reflect self-correction or trying out."
+[[indicator.rule]]
+id = "correction-medium"
+if = "eraseRatio is medium"
+then = "medium"
+rationale = "A share of erased strokes in the middle of the group."
+[[indicator.rule]]
+id = "correction-low"
+if = "eraseRatio is low"
+then = "low"
+rationale = "Few or no erased strokes compared with the others."
+
+[[indicator]]
+id = "colourVariety"
+name = "Colour variety"
+rationale = "How many clearly different colours were used."
+[indicator.levels]
+low = "few colours"
+medium = "a typical number of colours"
+high = "many colours"
+[[indicator.rule]]
+id = "variety-high"
+if = "distinctColours is high"
+then = "high"
+rationale = "More distinct colours than most of the others."
+[[indicator.rule]]
+id = "variety-medium"
+if = "distinctColours is medium"
+then = "medium"
+rationale = "A number of colours in the middle of the group."
+[[indicator.rule]]
+id = "variety-low"
+if = "distinctColours is low"
+then = "low"
+rationale = "Fewer distinct colours than most of the others, for example one colour only."
+
+[[indicator]]
+id = "colourWarmth"
+name = "Colour warmth"
+rationale = "The share of warm colours (red, orange, yellow, pink) in the coloured ink."
+[indicator.levels]
+low = "mostly cool colours"
+medium = "a mix of warm and cool colours"
+high = "mostly warm colours"
+[[indicator.rule]]
+id = "warmth-high"
+if = "warmShare is high"
+then = "high"
+rationale = "A high share of warm ink compared with the others. The meaning of colours differs between people."
+[[indicator.rule]]
+id = "warmth-medium"
+if = "warmShare is medium"
+then = "medium"
+rationale = "A share of warm ink in the middle of the group."
+[[indicator.rule]]
+id = "warmth-low"
+if = "warmShare is low"
+then = "low"
+rationale = "A low share of warm ink compared with the others."
+
+[[indicator]]
+id = "lineCharacter"
+name = "Line character"
+rationale = "Whether the lines are long and smooth, or short and winding."
+[indicator.levels]
+low = "long, smooth lines"
+medium = "lines of a typical length and shape"
+high = "short, winding lines"
+[[indicator.rule]]
+id = "line-high"
+if = "meanStrokeLength is low and directionalChange is high"
+then = "high"
+rationale = "Short strokes that change direction a lot make a fragmented, winding line."
+[[indicator.rule]]
+id = "line-low"
+if = "meanStrokeLength is high and directionalChange is low"
+then = "low"
+rationale = "Long strokes that change direction little make a calm, smooth line."
+[[indicator.rule]]
+id = "line-medium"
+if = "meanStrokeLength is medium and directionalChange is medium"
+then = "medium"
+rationale = "Both measures in the middle of the group."
+[[indicator.rule]]
+id = "line-high-weak"
+if = "meanStrokeLength is low or directionalChange is high"
+then = "high"
+weight = 0.5
+rationale = "One of the two alone is only a weak hint."
+[[indicator.rule]]
+id = "line-low-weak"
+if = "meanStrokeLength is high or directionalChange is low"
+then = "low"
+weight = 0.5
+rationale = "One of the two alone is only a weak hint."

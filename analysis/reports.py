@@ -15,7 +15,7 @@ from analysis.geometry import drawing_svg
 from analysis.narrative import render_sentence
 
 # Bump when the layout or the wording of a report changes: stored reports of other versions count as out of date.
-TEMPLATE_VERSION = "2"  # 2: the drawing report names the description of its session
+TEMPLATE_VERSION = "3"  # 2: the drawing report names the description of its session; 3: AI sections
 
 DISCLAIMER = "The numbers describe the drawing. They support the psychologist's judgement and are not a diagnosis."
 
@@ -82,10 +82,10 @@ def esc(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
-def _page(title: str, body: str, script: str = "") -> str:
+def _page(title: str, body: str, script: str = "", extra_styles: str = "") -> str:
     scripts = f"<script>{script}</script>" if script else ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{esc(title)}</title>'
-            f'<style>{_STYLES}</style></head><body><main>{body}</main>{scripts}</body></html>')
+            f'<style>{_STYLES}{extra_styles}</style></head><body><main>{body}</main>{scripts}</body></html>')
 
 
 def _header(title: str, analyzer_version: str) -> str:
@@ -148,8 +148,10 @@ def _viewer(doc: Drawing) -> str:
 
 def drawing_report(
         doc: Drawing, analysis: dict[str, Any], narrative: list[dict[str, Any]], title: str,
-        player: Optional[dict[str, Any]], session: Optional[dict[str, Any]],
+        player: Optional[dict[str, Any]], session: Optional[dict[str, Any]], ai_html: str = "", ai_styles: str = "",
 ) -> str:
+    """ai_html and ai_styles: the AI sections (ai/reporting.py), already escaped and marked as AI-generated."""
+
     metadata = doc.get("metadata") or {}
     player = player or {}
     figures = "".join(
@@ -172,22 +174,23 @@ def drawing_report(
         f"<section><h2>Overview</h2>{info}</section>"
         f'<section><h2>Snapshots</h2><div class="views">{figures}</div></section>' +
         _viewer(doc) +
-        f"<section><h2>Summary</h2>{sentences}</section>"
+        f"<section><h2>Summary</h2>{sentences}</section>" +
+        ai_html +
         f"<section><h2>Metrics</h2>{_metrics_table(analysis)}</section>"
         f"<section><h2>Colours</h2>{_palette(analysis)}</section>"
         f"<section><h2>Data quality</h2>{_flags(analysis)}</section>"
         f'<p class="note">{esc(DISCLAIMER)}</p>'
     )
-    return _page(title, body, _VIEWER_SCRIPT)
+    return _page(title, body, _VIEWER_SCRIPT, ai_styles)
 
 
 # --- Session report ---
 
 def session_report(
         session: dict[str, Any], stats: dict[str, Any], players: dict[str, dict[str, Any]],
-        drawings: list[dict[str, Any]], analyzer_version: str,
+        drawings: list[dict[str, Any]], analyzer_version: str, ai_html: str = "", ai_styles: str = "",
 ) -> str:
-    """drawings: [{name, playerId, gameType, date, svg}] of the session, for the gallery."""
+    """drawings: [{name, playerId, gameType, date, svg}] of the session, for the gallery. ai_html: see drawing_report."""
 
     title = session.get("name") or "Session"
 
@@ -222,11 +225,12 @@ def session_report(
         _header(title, analyzer_version) +
         f"<section><h2>Overview</h2>{info}</section>"
         f"<section><h2>Participants</h2>{participants}</section>"
-        f"<section><h2>Drawings</h2>{gallery}</section>"
+        f"<section><h2>Drawings</h2>{gallery}</section>" +
+        ai_html +
         f"<section><h2>Distribution of the metrics</h2>{distribution}</section>"
         f'<p class="note">{esc(DISCLAIMER)}</p>'
     )
-    return _page(title, body)
+    return _page(title, body, "", ai_styles)
 
 
 # --- Participant history report (REP-08) ---

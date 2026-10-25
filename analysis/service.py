@@ -5,6 +5,7 @@ pure analysis functions. It never writes to either database (SC-02). Only the fi
 
 import hashlib
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -18,6 +19,8 @@ from analysis.narrative import build_narrative
 from analysis.store import AnalysisStore, new_report_id
 
 REPORT_KINDS = ("drawing", "session", "participant")
+
+log = logging.getLogger("analysis")
 
 
 # --- MongoDB ---
@@ -339,10 +342,38 @@ def target_fingerprint(db: sqlite3.Connection, kind: str, target_id: str) -> Opt
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
+def _ai_signature(db: sqlite3.Connection, kind: str, target_id: str) -> str:
+    """What the AI part of a report depended on (ai/service.py). Empty for the report kinds without an AI part."""
+
+    if kind not in ("drawing", "session"):
+        return ""
+    try:
+        from ai import service as ai_service  # local import: a server without the AI package still makes reports
+
+        return ai_service.report_signature(db, kind, target_id)
+    except Exception:
+        log.exception("The AI state of a report could not be read")
+        return ""
+
+
+def _ai_html(db: sqlite3.Connection, kind: str, target_id: str) -> tuple[str, str]:
+    """(HTML, styles) of the AI sections of a report. A problem in the AI part must never stop a report from being made."""
+
+    try:
+        from ai import reporting, service as ai_service
+
+        sections = ai_service.report_sections(db, kind, target_id)
+        return (reporting.sections_html(sections), reporting.STYLES) if sections else ("", "")
+    except Exception:
+        log.exception("The AI sections of a report could not be made")
+        return "", ""
+
+
 def _is_stale(db: sqlite3.Connection, meta: dict[str, Any]) -> bool:
     current = target_fingerprint(db, meta["kind"], meta["targetId"])
     return (current is None or current != meta.get("fingerprint")
-            or meta.get("analyzerVersion") != ANALYZER_VERSION or meta.get("templateVersion") != reports.TEMPLATE_VERSION)
+            or meta.get("analyzerVersion") != ANALYZER_VERSION or meta.get("templateVersion") != reports.TEMPLATE_VERSION
+            or meta.get("aiSignature", "") != _ai_signature(db, meta["kind"], meta["targetId"]))
 
 
 def report_info(db: sqlite3.Connection, meta: dict[str, Any]) -> dict[str, Any]:
@@ -365,7 +396,8 @@ def _generate(db: sqlite3.Connection, store: AnalysisStore, kind: str, target_id
         meta = drawing_meta(db, target_id)
         title = f"{(meta or {}).get('name') or target_id}" + (f" ({player['name']})" if player and player["name"] else "")
         narrative = build_narrative(analysis, (player or {}).get("dominantHand"))
-        return title, reports.drawing_report(document, analysis, narrative, title, player, session)
+        ai_html, ai_styles = _ai_html(db, "drawing", target_id)
+        return title, reports.drawing_report(document, analysis, narrative, title, player, session, ai_html, ai_styles)
 
     if kind == "session":
         session = session_row(db, target_id)
@@ -381,7 +413,8 @@ def _generate(db: sqlite3.Connection, store: AnalysisStore, kind: str, target_id
                                 "svg": drawing_thumbnail(meta["id"], store) or ""})
         players = player_infos(db, [m["playerID"] for m in metas])
         stats = session_stats(target_id, entries)
-        return session["name"], reports.session_report(session, stats, players, gallery, ANALYZER_VERSION)
+        ai_html, ai_styles = _ai_html(db, "session", target_id)
+        return session["name"], reports.session_report(session, stats, players, gallery, ANALYZER_VERSION, ai_html, ai_styles)
 
     if kind == "participant":
         history = participant_history(db, store, target_id)
@@ -417,6 +450,7 @@ def create_report(db: sqlite3.Connection, store: AnalysisStore, kind: str, targe
         "kind": kind, "targetId": target_id, "title": title,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "fingerprint": fingerprint, "analyzerVersion": ANALYZER_VERSION, "templateVersion": reports.TEMPLATE_VERSION,
+        "aiSignature": _ai_signature(db, kind, target_id),
     }
     store.save_report(meta, html)
     return report_info(db, meta), False

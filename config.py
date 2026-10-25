@@ -75,6 +75,55 @@ ADMIN_MIN_PASSWORD_LENGTH = 10
 ADMIN_PASSWORD_ENV_VAR = "ADMIN_PASSWORD"
 
 
+# --- AI based analysis and decision support (requirements AI-01..AI-17) ---
+# All AI runs on this machine (AI-01): there is no cloud call, and the language/vision models are only ever asked
+# through a local Ollama server. AI output is decision support for the psychologist, never a diagnosis (AI-05).
+# A switch is read when the server starts, so changing one needs a restart (AI-03).
+AI_ENABLED = True  # the global switch: False turns every AI function off, the rest of the app is not affected
+
+# One switch per function. The names are used by the web app.
+AI_FEATURES = {
+    "cohort": True,       # AI-10 atypical drawings, similar drawings, 2D map (scikit-learn, no model weights)
+    "groups": True,       # AI-11 stroke clustering into object-like groups (scikit-learn, no model weights)
+    "indicators": True,   # AI-14 fuzzy logic indicators from the rule base in ai/rules/
+    "insights": True,     # AI-15 session level insights
+    "labels": True,       # AI-12 zero-shot labelling by a CLIP model (needs PyTorch + open_clip + the weights)
+    "description": True,  # AI-13 description by a vision-language model (needs Ollama + a vision model)
+    "summary": True,      # AI-16 conclusion written by a language model (needs Ollama + a text model)
+}
+
+# AI-07: a function counts as evaluated once it was tried on a sample set of drawings together with a psychologist
+# and the agreement and failure modes were written down (see ai/README.md). Until then the web app shows an extra
+# "not yet evaluated" note. Set a function to True here only after that trial.
+AI_EVALUATED = {name: False for name in AI_FEATURES}
+
+# A group of fewer drawings than this gets no atypical-drawing detection, map or similar drawings (AI-10).
+AI_MIN_COHORT = 8
+# Fuzzy indicators use the cohort percentiles when the cohort has at least this many drawings, fixed ranges otherwise.
+AI_MIN_FUZZY_COHORT = 8
+# The second opinion of the isolation forest needs a few more drawings than the robust z-scores.
+AI_MIN_ISOLATION_FOREST = 12
+
+# Background jobs of the heavy functions (AI-02, TEC-05): how many run at once, how many finished ones are remembered.
+AI_MAX_CONCURRENT_JOBS = 1
+AI_JOB_HISTORY = 100
+
+# A local Ollama server (https://ollama.com) serves the language and vision models. Only a loopback address is accepted.
+OLLAMA_URL = "http://127.0.0.1:11434"
+AI_TEXT_MODEL = "qwen2.5:7b-instruct"   # AI-16
+AI_VISION_MODEL = "qwen2.5vl:7b"        # AI-13
+AI_OLLAMA_TIMEOUT_SECONDS = 180
+# Asking whether Ollama is there and which models it has must be quick: a closed local port takes about 2 s to be
+# refused on Windows, which would stall every status call, so such a question gives up after this long.
+AI_OLLAMA_PROBE_SECONDS = 1.0
+# CLIP model of the zero-shot labelling (AI-12), as OpenCLIP names them
+AI_CLIP_MODEL = "ViT-B-32"
+AI_CLIP_PRETRAINED = "laion2b_s34b_b79k"
+# Where the fuzzy rule base and the label vocabulary are read from. None = the files that come with the server.
+AI_RULES_PATH = None
+AI_VOCABULARY_PATH = None
+
+
 # --- CORS Configuration ---
 # List of origins (frontend URLs) allowed to communicate with this API.
 # Use ["*"] to allow any origin (only for local testing, NEVER for production).

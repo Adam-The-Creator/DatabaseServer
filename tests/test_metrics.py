@@ -191,7 +191,7 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(catalog.format_duration(3900), "1 h 05 min")
         self.assertEqual(catalog.format_duration(3 * 86400 + 2 * 3600 + 30), "3 d 2 h")
         self.assertEqual(catalog.format_metric("strokesDrawn", 3), "3")
-        self.assertEqual(catalog.format_metric("totalLength", None), "–")
+        self.assertEqual(catalog.format_metric("totalLength", None), "-")
         self.assertEqual(catalog.format_metric("boundingVolume", 1234.5), "1,234.5 m³")
 
 
