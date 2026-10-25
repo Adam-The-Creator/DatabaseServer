@@ -6,12 +6,13 @@ from typing import List, Optional
 
 import bson
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError, field_validator
 
 import database
 from database import get_active_session_id, get_db, execute_with_retry
 from models.mongodb.models import (
-    Drawing, GameType, Line, LineStats, TrackedBehavior, Collaborator, PlacedModel, Metadata, DrawingEvent
+    Drawing, GameType, Line, LineStats, TrackedBehavior, Collaborator, PlacedModel, Metadata, DrawingEvent,
+    SadChildCoordinate
 )
 from models.sqlite.models import DrawingMeta
 from security import CurrentPlayer, get_current_player, require_psychologist
@@ -39,6 +40,20 @@ class DrawingSaveMessage(BaseModel):
     events: Optional[List[DrawingEvent]] = None
     appVersion: Optional[str] = None
     device: Optional[str] = None
+    sadChildCoordinates: Optional[SadChildCoordinate] = None
+
+    @field_validator("sadChildCoordinates", mode="wrap")
+    @classmethod
+    def _figure_or_nothing(cls, value, handler):
+        """It is optional metadata: a malformed or non-finite position is dropped instead of refusing the drawing."""
+
+        try:
+            figure = handler(value)
+        except ValidationError:
+            return None
+        if figure is not None and not all(math.isfinite(number) for number in figure.model_dump().values() if number is not None):
+            return None
+        return figure
 
 
 class DrawingUpdateMessage(BaseModel):
@@ -230,7 +245,7 @@ def save_drawing(message: DrawingSaveMessage, db: sqlite3.Connection = Depends(g
         sessionID=session_id,
         showBoy=show_boy,
         showGirl=show_girl,
-        sadChildCoordinates=None,
+        sadChildCoordinates=message.sadChildCoordinates,
         schemaVersion=SCHEMA_VERSION,
         appVersion=message.appVersion,
         device=message.device
