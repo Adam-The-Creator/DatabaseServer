@@ -17,6 +17,13 @@ PERSISTENT_DATA_PATH = ""
 # The environment variable ANALYSIS_STORE_PATH overrides it. Relative paths are relative to the working directory.
 ANALYSIS_STORE_PATH = "analysis_store"
 
+# Folder of the built web app (DataAnalysis: `pnpm build`, it has an index.html). The server then serves it at /app, so the
+# psychologists open the app at the same address as the game (the ngrok URL), without CORS (requirements TEC-08, SEC-09).
+# None = the server does not serve the web app. The environment variable named below overrides it (the launcher sets it).
+# Relative paths are relative to the working directory.
+WEBAPP_PATH = "../DataAnalysis/dist/"
+WEBAPP_PATH_ENV_VAR = "WEBAPP_PATH"
+
 # Database server configuration
 HOST = "127.0.0.1"
 PORT = 8000

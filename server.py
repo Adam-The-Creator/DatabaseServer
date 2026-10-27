@@ -5,15 +5,17 @@ import sys
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo.errors import ServerSelectionTimeoutError
+from starlette.responses import RedirectResponse
 
 import admin_account
 import config
 from ai import jobs as ai_jobs
 import database
 import security
+import webapp
 from routers import drawings, players, auth, sessions, rooms
 from routers import admin as admin_api
 from routers import ai as ai_api
@@ -48,6 +50,11 @@ async def lifespan(app: FastAPI):
         print(f"⚠️ {config.JWT_SECRET_ENV_VAR} is not set: using a random secret for this run, "
               "so issued tokens become invalid when the server restarts.")
 
+    if webapp.served_from() is not None:
+        print(f"✅ Serving the web app at {webapp.PREFIX}/ from {webapp.served_from()}")
+        if webapp.problem():
+            print(f"⚠️ {webapp.problem()}")
+
     yield  # <-- the app serves requests while suspended here
 
     # --- Shutdown ---
@@ -59,8 +66,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="VR Drawing 3D REST API (Hybrid Mongo/SQLite)", lifespan=lifespan)
 
 @app.get("/", summary="Health check endpoint")
-def health_check():
-    """Basic root endpoint to verify the server is online."""
+def health_check(request: Request):
+    """
+    Basic root endpoint to verify the server is online. A browser that is sent here is passed on to the web app when this
+    server serves it; the game, UrlConfigurator and the launcher (no "text/html" in their Accept header) get the answer below.
+    """
+    if webapp.served_from() is not None and webapp.is_browser_page_request(request):
+        return RedirectResponse(webapp.PREFIX + "/")
     return {"status": "online", "message": "VR Drawing Database Server is running"}
 
 # Throttling per client address, request size cap and security headers (requirements SEC-02, SEC-04, SEC-09). Added
@@ -87,6 +99,9 @@ app.include_router(analysis_api.router)
 app.include_router(ai_api.router)
 app.include_router(feedback_api.router)
 app.include_router(admin_api.router)
+
+# The built web app at /app, when config.WEBAPP_PATH (or the environment variable) names it (requirements TEC-08, SEC-09)
+webapp.mount(app)
 
 
 def create_admin_account(username: str) -> int:

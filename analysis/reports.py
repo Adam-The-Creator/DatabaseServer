@@ -4,6 +4,8 @@ and a small inline 3D viewer, no external resource (no CDN), so it opens offline
 All text that comes from the data (names, descriptions, ...) is HTML-escaped (REP-05).
 """
 
+import base64
+import hashlib
 import html
 import json
 from datetime import datetime, timezone
@@ -80,6 +82,17 @@ _VIEWER_SCRIPT = """
 
 def esc(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
+
+
+def inline_script_hashes() -> list[str]:
+    """
+    The Content-Security-Policy hash sources ('sha256-...') of the inline scripts that a report page contains. The web app
+    opens a report in a tab made from a blob, and such a page inherits the CSP of the web app (SEC-09), which would block its
+    inline viewer script: webapp.py lists these hashes in the app's policy, so that no other inline script is allowed.
+    """
+
+    return [f"'sha256-{base64.b64encode(hashlib.sha256(script.encode('utf-8')).digest()).decode('ascii')}'"
+            for script in (_VIEWER_SCRIPT,)]
 
 
 def _page(title: str, body: str, script: str = "", extra_styles: str = "") -> str:
